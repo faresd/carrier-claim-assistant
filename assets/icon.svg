@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Carrier Claim Assistant</title>
+  <desc id="desc">A parcel with a verified delivery-status marker.</desc>
+  <defs>
+    <linearGradient id="background" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#183b66"/>
+      <stop offset="1" stop-color="#0b223d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="302" y1="298" x2="445" y2="455" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffad33"/>
+      <stop offset="1" stop-color="#f07818"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#background)"/>
+  <path d="M112 182 256 104l144 78v156L256 416l-144-78V182Z" fill="#fff"/>
+  <path d="m112 182 144 78 144-78M256 260v156" fill="none" stroke="#bfd1e5" stroke-width="26" stroke-linejoin="round"/>
+  <path d="m190 139 144 78" fill="none" stroke="#0b223d" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="376" cy="376" r="92" fill="url(#accent)" stroke="#fff" stroke-width="18"/>
+  <path d="m334 377 29 29 58-65" fill="none" stroke="#fff" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+
