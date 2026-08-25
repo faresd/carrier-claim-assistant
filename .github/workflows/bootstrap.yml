@@ -1026,6 +1026,7 @@ jobs:
           printf '%s' "$ARCHIVE_BASE64" | base64 --decode > /tmp/carrier-claim-assistant-source.tar.gz
           echo "882044d450fb55a87ff1ddea02ae6cfa827534dd7e59c97f05869ec1da92fd30  /tmp/carrier-claim-assistant-source.tar.gz" | sha256sum --check
           tar -xzf /tmp/carrier-claim-assistant-source.tar.gz
+          rm -f .github/workflows/ci.yml .github/workflows/pages.yml .github/workflows/release.yml
       - name: Run extension tests
         run: npm test
       - name: Verify generated assets
