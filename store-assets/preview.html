@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Carrier Claim Assistant — Store preview</title>
+    <style>
+      * { box-sizing: border-box; }
+      :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172334; background: #eef2f6; }
+      body { width: 1280px; height: 800px; margin: 0; overflow: hidden; }
+      .topbar { height: 58px; padding: 0 30px; display: flex; align-items: center; gap: 28px; color: white; background: #101b2d; }
+      .brand { font-weight: 800; letter-spacing: .01em; }
+      .search { width: 430px; padding: 10px 16px; border-radius: 7px; color: #64748b; background: white; }
+      .spacer { flex: 1; }
+      .seller { font-size: 13px; color: #dbe5f1; }
+      .layout { display: grid; grid-template-columns: 190px 1fr; height: 742px; }
+      nav { padding: 24px 18px; color: #405169; background: white; border-right: 1px solid #dfe5ec; }
+      nav strong { display: block; padding: 10px 12px; color: #173b67; background: #eaf2fb; border-radius: 8px; }
+      nav span { display: block; padding: 12px; }
+      main { position: relative; padding: 26px 30px; }
+      .crumb { color: #5e7189; font-size: 13px; }
+      h1 { margin: 10px 0 20px; font-size: 26px; }
+      .demo { position: absolute; top: 25px; right: 30px; padding: 7px 12px; border: 1px solid #f0b34f; border-radius: 999px; color: #865214; background: #fff7e8; font-size: 12px; font-weight: 700; }
+      .columns { display: grid; grid-template-columns: 1fr 405px; gap: 24px; }
+      .card { padding: 20px 22px; background: white; border: 1px solid #dfe5ec; border-radius: 10px; box-shadow: 0 4px 14px #0e254111; }
+      .card + .card { margin-top: 16px; }
+      h2 { margin: 0 0 15px; font-size: 17px; }
+      .rows { display: grid; grid-template-columns: 150px 1fr; gap: 11px 20px; font-size: 14px; }
+      .label { color: #60738a; }
+      .link { color: #1769aa; font-weight: 700; }
+      .product { display: flex; gap: 16px; align-items: center; }
+      .product-box { width: 75px; height: 75px; display: grid; place-items: center; border-radius: 8px; color: #789; background: #edf1f5; font-size: 28px; }
+      .panel { position: relative; padding: 0; overflow: hidden; border: 2px solid #173b67; box-shadow: 0 18px 50px #0b223d2c; }
+      .panel-head { display: flex; align-items: center; gap: 11px; padding: 15px 18px; color: white; background: #173b67; }
+      .panel-head img { width: 34px; height: 34px; }
+      .panel-title { font-weight: 800; }
+      .panel-sub { font-size: 12px; color: #c9d9eb; }
+      .status { margin: 17px 18px 0; padding: 13px 14px; border-radius: 8px; color: #7a4510; background: #fff4df; border: 1px solid #ffd58c; }
+      .status strong { display: block; font-size: 14px; }
+      .status span { font-size: 12px; }
+      .form { padding: 15px 18px 19px; }
+      .field { margin-bottom: 12px; }
+      .field label { display: block; margin-bottom: 5px; color: #53677f; font-size: 12px; font-weight: 700; }
+      .input { min-height: 37px; padding: 9px 10px; border: 1px solid #bbc8d6; border-radius: 6px; background: white; font-size: 13px; }
+      .textarea { height: 74px; line-height: 1.35; }
+      .recipient { display: grid; grid-template-columns: 115px 1fr; gap: 9px; }
+      .recipient .input { background: #f8fafc; }
+      .buttons { display: flex; justify-content: flex-end; gap: 9px; margin-top: 15px; }
+      button { border: 0; padding: 10px 14px; border-radius: 7px; font-weight: 750; }
+      .secondary { color: #173b67; background: #eaf1f8; }
+      .primary { color: white; background: #ed7e20; }
+      .floating { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 12px 20px; border-radius: 999px; color: white; background: #ed7e20; box-shadow: 0 8px 24px #9c4d1366; font-size: 14px; font-weight: 800; }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Seller Central</div>
+      <div class="search">Search orders, products, customers…</div>
+      <div class="spacer"></div>
+      <div class="seller">Example Store · France</div>
+    </header>
+    <div class="layout">
+      <nav><strong>Orders</strong><span>Manage Orders</span><span>Order Reports</span><span>Shipping</span><span>Inventory</span><span>Settings</span></nav>
+      <main>
+        <div class="crumb">Orders / Order details</div>
+        <h1>Order 111-2222222-3333333</h1>
+        <div class="demo">SYNTHETIC PREVIEW DATA</div>
+        <div class="columns">
+          <section>
+            <article class="card">
+              <h2>Shipment details</h2>
+              <div class="rows">
+                <span class="label">Status</span><strong>Shipped</strong>
+                <span class="label">Shipping carrier</span><strong>Colissimo</strong>
+                <span class="label">Tracking ID</span><span class="link">CC000000002FR</span>
+                <span class="label">Ship date</span><span>17 August 2026</span>
+                <span class="label">Deliver by</span><span>20 August 2026</span>
+              </div>
+            </article>
+            <article class="card">
+              <h2>Order contents</h2>
+              <div class="product"><div class="product-box">□</div><div><strong>Example Bluetooth Headset</strong><br><span class="label">Qty 1 · €129.00</span></div></div>
+            </article>
+            <article class="card">
+              <h2>Ship to</h2>
+              <div>Mary Example<br>Main Street 1<br>D02XY12 Dublin<br>Ireland</div>
+            </article>
+          </section>
+          <aside class="card panel">
+            <div class="panel-head"><img src="../icons/icon48.png" alt=""><div><div class="panel-title">Carrier Claim Assistant</div><div class="panel-sub">Official carrier check complete</div></div></div>
+            <div class="status"><strong>Claim recommended · Not delivered</strong><span>Last checked: 24/08/2026 16:30 · La Poste official tracking</span></div>
+            <div class="form">
+              <div class="field"><label>Complaint reason</label><div class="input">Unlocated / not delivered ▾</div></div>
+              <div class="field recipient"><div><label>Recipient title</label><div class="input">Madame ▾</div></div><div><label>Destination</label><div class="input">Mary Example · D02XY12 Dublin · Irlande</div></div></div>
+              <div class="field"><label>Editable claim message</label><div class="input textarea">L'envoi CC000000002FR n'a pas été livré dans le délai annoncé. Merci d'ouvrir une investigation et de nous communiquer une solution.</div></div>
+              <div class="buttons"><button class="secondary">Close</button><button class="primary">Start automated claim</button></div>
+            </div>
+          </aside>
+        </div>
+        <div class="floating">Claim recommended · Review</div>
+      </main>
+    </div>
+  </body>
+</html>
+
