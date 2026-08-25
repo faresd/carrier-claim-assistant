@@ -13,9 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Use Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Verify tag and manifest version
@@ -27,7 +27,7 @@ jobs:
       - name: Build Chrome Web Store package
         run: npm run package
       - name: Save verified package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: carrier-claim-assistant-${{ github.ref_name }}
           path: dist/*.zip
@@ -40,7 +40,7 @@ jobs:
       contents: write
     steps:
       - name: Download verified package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: carrier-claim-assistant-${{ github.ref_name }}
           path: dist
@@ -55,13 +55,13 @@ jobs:
     environment: chrome-web-store
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Use Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Download verified package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: carrier-claim-assistant-${{ github.ref_name }}
           path: dist
