@@ -1,0 +1,76 @@
+name: Release and publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Verify tag and manifest version
+        run: node scripts/verify-release.mjs "$GITHUB_REF_NAME"
+      - name: Run tests
+        run: npm test
+      - name: Verify generated visual assets
+        run: npm run generate:assets && git diff --exit-code -- icons store-assets/*.png
+      - name: Build Chrome Web Store package
+        run: npm run package
+      - name: Save verified package
+        uses: actions/upload-artifact@v7
+        with:
+          name: carrier-claim-assistant-${{ github.ref_name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified package
+        uses: actions/download-artifact@v8
+        with:
+          name: carrier-claim-assistant-${{ github.ref_name }}
+          path: dist
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+
+  chrome-web-store:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: chrome-web-store
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Download verified package
+        uses: actions/download-artifact@v8
+        with:
+          name: carrier-claim-assistant-${{ github.ref_name }}
+          path: dist
+      - name: Upload and submit to Chrome Web Store
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_PUBLISH_TYPE: ${{ vars.CWS_PUBLISH_TYPE }}
+        run: node scripts/publish-chrome-web-store.mjs dist/*.zip
