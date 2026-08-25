@@ -129,4 +129,6 @@ test("reads a La Poste status and French date from an open shadow root", async (
   const chronopostResult = checker.parseStatus("chronopost", chronopostTrackingNumber);
   assert.equal(chronopostResult.hasResult, true);
   assert.equal(chronopostResult.statusText, "Livraison effectuée");
+  assert.equal(chronopostResult.eventDate, "2026-08-20T10:50:00.000Z");
+  assert.equal(checker.extractEventDate("20/01/2026 à 12:50"), "2026-01-20T11:50:00.000Z");
 });

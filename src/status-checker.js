@@ -47,11 +47,51 @@
     return lines.filter((line) => terms.test(line));
   }
 
+  function parisDateToISOString(year, monthIndex, day, hour, minute) {
+    const requestedWallTime = Date.UTC(year, monthIndex, day, hour, minute);
+    let utcGuess = requestedWallTime;
+    const formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Paris",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23"
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const values = Object.fromEntries(
+        formatter
+          .formatToParts(new Date(utcGuess))
+          .filter((part) => part.type !== "literal")
+          .map((part) => [part.type, Number(part.value)])
+      );
+      const renderedWallTime = Date.UTC(
+        values.year,
+        values.month - 1,
+        values.day,
+        values.hour,
+        values.minute,
+        values.second
+      );
+      utcGuess += requestedWallTime - renderedWallTime;
+    }
+
+    return new Date(utcGuess).toISOString();
+  }
+
   function extractEventDate(text) {
-    const french = text.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?:\s+(\d{1,2}):?(\d{2}))?/);
+    const french = text.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?:\s+(?:(?:a|à)\s+)?(\d{1,2}):?(\d{2}))?/i);
     if (french) {
-      const date = new Date(Number(french[3]), Number(french[2]) - 1, Number(french[1]), Number(french[4] || 12), Number(french[5] || 0));
-      if (!Number.isNaN(date.getTime())) return date.toISOString();
+      return parisDateToISOString(
+        Number(french[3]),
+        Number(french[2]) - 1,
+        Number(french[1]),
+        Number(french[4] || 12),
+        Number(french[5] || 0)
+      );
     }
     const months = {
       janvier: 0, fevrier: 1, mars: 2, avril: 3, mai: 4, juin: 5,
@@ -59,8 +99,13 @@
     };
     const words = normalize(text).match(/\b(\d{1,2})\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\s+(\d{4})(?:\s+a\s+(\d{1,2})(?:h|:)(\d{2}))?/);
     if (words) {
-      const date = new Date(Number(words[3]), months[words[2]], Number(words[1]), Number(words[4] || 12), Number(words[5] || 0));
-      if (!Number.isNaN(date.getTime())) return date.toISOString();
+      return parisDateToISOString(
+        Number(words[3]),
+        months[words[2]],
+        Number(words[1]),
+        Number(words[4] || 12),
+        Number(words[5] || 0)
+      );
     }
     return null;
   }
