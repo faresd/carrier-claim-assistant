@@ -372,16 +372,19 @@
   }
 
   async function finishSuccessfulSubmission() {
-    if (!state.claim?.submissionStartedAt) return false;
+    if (!state.claim) return false;
     const success = outcomeRules.detectClaimSuccess("laposte", document.body.innerText);
     if (!success) return false;
+    const recoveredFromCarrierConfirmation = !state.claim.submissionStartedAt;
+    if (recoveredFromCarrierConfirmation && !success.reference) return false;
     if (state.successReported) return true;
     const response = await chrome.runtime.sendMessage({
       type: "CLAIM_SUBMISSION_SUCCESS",
       carrier: "laposte",
       claimId: state.claim.id,
       reference: success.reference,
-      confirmationText: success.confirmationText
+      confirmationText: success.confirmationText,
+      recoveredFromCarrierConfirmation
     });
     if (!response?.ok) {
       updatePanel(`La Poste confirmed submission, but Amazon could not be updated: ${response?.error || "Unknown error"}`);
@@ -395,10 +398,11 @@
   }
 
   async function advance() {
-    if (!state.claim || state.working || state.paused) return;
+    if (!state.claim || state.working) return;
     state.working = true;
     try {
       if (await finishSuccessfulSubmission()) return;
+      if (state.paused) return;
       const filled = fillVisibleFields();
       const moved = chooseGenericStep();
       const progress = document.querySelector("[role='progressbar']")?.innerText || "";

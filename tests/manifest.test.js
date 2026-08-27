@@ -122,6 +122,7 @@ test("persists successful claims to Seller Notes and a sent button state", () =>
   assert.match(amazonScript, /Claim sent ·/);
   assert.match(amazonScript, /claimOutcomesByOrder/);
   assert.match(amazonScript, /sellerNotesControl/);
+  assert.match(amazonScript, /Record existing claim/);
   assert.match(assistantCss, /data-state="sent"/);
 });
 
@@ -135,6 +136,7 @@ test("hides the La Poste pause control after successful submission", () => {
   assert.match(laposteScript, /pauseButton\.hidden = true/);
   assert.doesNotMatch(laposteScript, />Ⅱ<\/button>/);
   assert.match(laposteScript, /aria-label="Pause automation"/);
+  assert.match(laposteScript, /finishSuccessfulSubmission\(\)\) return;\s*if \(state\.paused\) return;/);
 });
 
 test("uses the contracted Chronopost shipment lookup without filling both lookup keys", () => {

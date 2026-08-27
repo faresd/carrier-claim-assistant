@@ -352,7 +352,7 @@ async function handleClaimWorkflowState(message, sender) {
   return { ok: true, foregrounded: needsForeground };
 }
 
-async function handleClaimSubmissionSuccess(message) {
+async function handleClaimSubmissionSuccess(message, sender) {
   const key = pendingClaimKey(message.carrier);
   if (!key) return { ok: false, error: "Unsupported carrier claim." };
   const storedClaim = await chrome.storage.session.get(key);
@@ -360,11 +360,16 @@ async function handleClaimSubmissionSuccess(message) {
   if (!claim || !message.claimId || claim.id !== message.claimId) {
     return { ok: false, error: "Pending claim expired or does not match." };
   }
-  if (!claim.submissionStartedAt) {
+  const reference = String(message.reference || "").replace(/[^A-Z0-9./_-]/gi, "").slice(0, 40);
+  const senderUrl = String(sender?.url || sender?.tab?.url || "");
+  const recoveredFromOfficialConfirmation = message.recoveredFromCarrierConfirmation === true &&
+    message.carrier === "laposte" &&
+    Boolean(reference) &&
+    /^https:\/\/(?:contact\.aide|aide)\.laposte\.fr\//i.test(senderUrl);
+  if (!claim.submissionStartedAt && !recoveredFromOfficialConfirmation) {
     return { ok: false, error: "The carrier submission was not explicitly confirmed." };
   }
 
-  const reference = String(message.reference || "").replace(/[^A-Z0-9./_-]/gi, "").slice(0, 40);
   const outcome = {
     id: claim.id,
     carrier: claim.carrier,
@@ -469,7 +474,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "CLAIM_SUBMISSION_SUCCESS") {
-    handleClaimSubmissionSuccess(message)
+    handleClaimSubmissionSuccess(message, sender)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

@@ -221,6 +221,33 @@ test("stores a successful claim, notifies Amazon, and clears the pending submiss
   assert.equal(sentMessages.at(-1).message.type, "CLAIM_SUBMISSION_SUCCESS");
 });
 
+test("recovers a referenced La Poste confirmation when the final carrier button was clicked directly", async () => {
+  const claim = {
+    id: "claim-recovery-1",
+    carrier: "laposte",
+    reason: "lost",
+    order: { orderId: "402-2797047-3010738", trackingNumber: "8U02230078613" },
+    executionMode: "automatic"
+  };
+  await send({ type: "OPEN_CARRIER_CLAIM", claim }, { tab: { id: 56 } });
+
+  const response = await send({
+    type: "CLAIM_SUBMISSION_SUCCESS",
+    carrier: "laposte",
+    claimId: claim.id,
+    reference: "COL-91855121",
+    confirmationText: "Message envoyé !",
+    recoveredFromCarrierConfirmation: true
+  }, {
+    url: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis/success",
+    tab: { id: 156 }
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(local.claimOutcomesByOrder[claim.order.orderId].reference, "COL-91855121");
+  assert.equal(session.pendingLaPosteClaim, undefined);
+});
+
 test("audits a page sequentially through one reusable inactive worker tab", async () => {
   const orderId = "111-2222222-3333333";
   const createdBeforeAudit = createdTabs.length;

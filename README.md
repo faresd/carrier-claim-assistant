@@ -50,6 +50,8 @@ On **Orders → Manage Orders**, every seller-fulfilled order row receives a car
 10. After the carrier displays a verified success confirmation, the extension appends a timestamped entry to Amazon **Seller Notes**, including the carrier claim reference when one is displayed. Existing notes are preserved.
 11. The Amazon button changes to the persistent **Claim sent** state (with the reference when available), preventing accidental duplicate claims.
 
+Success detection remains active while form automation is paused, so manually selecting the carrier's final submit control does not suppress the saved outcome. For a claim created outside the assistant or before an extension reload, open the Amazon preview, enter the carrier reference under **Existing claim reference**, and choose **Record existing claim** to restore the persistent sent state and Seller Notes entry.
+
 Neither La Poste nor the documented Chronopost contract Webservices expose a supported claim-creation operation. Chronopost's existing contract API is used for shipping/account services; Service Client claims remain in its authenticated Pro form. The extension deliberately lets the official carrier page make the authenticated first-party submission instead of bypassing session, CSRF, or anti-abuse controls. A direct Chronopost claim API can be added later if Chronopost supplies an authorized endpoint and contract documentation.
 
 ## Settings
