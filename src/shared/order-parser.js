@@ -94,7 +94,7 @@
     const normalizedText = String(text || "").replace(/\u00a0/g, " ");
     const lines = linesOf(normalizedText);
     const orderIdMatch = normalizedText.match(/Order ID:\s*#?\s*([0-9-]+)/i);
-    const trackingMatch = normalizedText.match(/Tracking ID\s*\n\s*([A-Z]{2}[A-Z0-9]{9,13}[A-Z]{2}|[A-Z0-9-]{8,25})/i);
+    const trackingMatch = normalizedText.match(/Tracking ID\s*:?\s*\n\s*([A-Z]{2}[A-Z0-9]{9,13}[A-Z]{2}|[A-Z0-9-]{8,25})/i);
     const subtotalMatches = [...normalizedText.matchAll(/Item subtotal:\s*\n?\s*€\s*([\d.,]+)/gi)];
     const shipDate = valueAfter(lines, "Ship date", (line) => /\d{4}|mon|tue|wed|thu|fri|sat|sun/i.test(line));
     const deliverByMatch = normalizedText.match(/Deliver by:\s*([^\n]+(?:\s+to\s+[^\n]+)?)/i);

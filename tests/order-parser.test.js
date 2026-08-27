@@ -70,6 +70,19 @@ test("fails closed when no tracking number is present", () => {
   assert.equal(parseOrderDetails("Order ID: # 123-1234567-1234567").trackingNumber, "");
 });
 
+test("extracts a tracking number from Amazon's edit-consignment label with a colon", () => {
+  const order = parseOrderDetails(`
+Order details Order ID: # 402-2797047-3010738
+Carrier:
+Chronopost
+Delivery Service:
+Chrono Classic
+Tracking ID:
+8U02230078613
+  `);
+  assert.equal(order.trackingNumber, "8U02230078613");
+});
+
 test("extracts Colissimo international orders with the COLISSIMOS alias", () => {
   const order = parseOrderDetails(`
 Order details Order ID: # 444-5555555-6666666

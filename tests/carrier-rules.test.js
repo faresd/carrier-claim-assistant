@@ -35,6 +35,10 @@ test("uses an unambiguous tracking-number format to correct the carrier label", 
   assert.equal(corrected.labelMismatch, true);
 
   assert.equal(detectCarrier({ carrier: "Chronopost", trackingNumber: "6A12345678901" }).id, "laposte");
+  const laPoste8U = detectCarrier({ carrier: "Chronopost", trackingNumber: "8U02230078613" });
+  assert.equal(laPoste8U.id, "laposte");
+  assert.equal(laPoste8U.source, "tracking_number");
+  assert.equal(laPoste8U.labelMismatch, true);
   assert.equal(carrierFromTrackingNumber("CC000000002FR"), null);
   assert.equal(detectCarrier({ carrier: "Colissimo", trackingNumber: "CC000000002FR" }).id, "laposte");
 });
