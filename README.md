@@ -27,6 +27,12 @@ It is centered along the bottom edge of the Amazon page so extension-reserved co
 
 On **Orders → Manage Orders**, every seller-fulfilled order row receives a carrier-claim badge. Shipped orders are checked automatically through one reusable inactive worker tab; it visits the Amazon order details and official carrier tracking page sequentially, then closes once the page queue is complete. Results are normally cached for 12 hours. An official **delivered** result is terminal: it is saved indefinitely and reused on both list and order-detail pages without contacting the carrier again. Its original **Last checked** date/time remains visible across reloads. **Check again** or **Recheck page** explicitly replaces that saved result. Successful claims also retain their submission date/time and immediately display **Claim sent**. The toolbar can pause or recheck the current page. Unshipped, pending, and cancelled rows are marked ineligible without contacting a carrier.
 
+Version 2.9 adds an optional private return-monitor service. Amazon order/tracking context is registered per Seller Central merchant and marketplace, so multiple Amazon accounts remain separated while the admin dashboard can show an All accounts view. The cloud monitor uses the official La Poste Suivi v2 API for Colissimo, La Poste, and Chronopost every morning at 07:00 Europe/Paris. Manage Orders badges prioritize **Returning to sender**, **Pickup required**, **Lost · investigate**, and **Returned · received** over generic claim labels. The extension polls the server for new pickup alerts and displays a persistent Chrome/Brave notification.
+
+The production dashboard and API use `https://tracking.cheaply.fr`. New installations prefill this address and connect through a temporary six-digit pairing code; the cloud service remains disabled until a browser is paired.
+
+The dashboard contains All, Lost, Returned, and Resolved histories, an Amazon-account filter, tracking details, claim context, a prepare-claim action, and explicit **Confirm received** resolution. Installations on other computers or browser profiles connect with a one-time six-digit code and receive separate revocable device tokens. See [`monitor-service/README.md`](monitor-service/README.md).
+
 ## Workflow
 
 1. Open an Amazon Seller Central order detail page.
@@ -50,6 +56,8 @@ On **Orders → Manage Orders**, every seller-fulfilled order row receives a car
 10. After the carrier displays a verified success confirmation, the extension appends a timestamped entry to Amazon **Seller Notes**, including the carrier claim reference when one is displayed. Existing notes are preserved.
 11. The Amazon button changes to the persistent **Claim sent** state (with the reference when available), preventing accidental duplicate claims.
 
+Success detection remains active while form automation is paused, so manually selecting the carrier's final submit control does not suppress the saved outcome. For a claim created outside the assistant or before an extension reload, open the Amazon preview, enter the carrier reference under **Existing claim reference**, and choose **Record existing claim** to restore the persistent sent state and Seller Notes entry.
+
 Neither La Poste nor the documented Chronopost contract Webservices expose a supported claim-creation operation. Chronopost's existing contract API is used for shipping/account services; Service Client claims remain in its authenticated Pro form. The extension deliberately lets the official carrier page make the authenticated first-party submission instead of bypassing session, CSRF, or anti-abuse controls. A direct Chronopost claim API can be added later if Chronopost supplies an authorized endpoint and contract documentation.
 
 ## Settings
@@ -70,13 +78,14 @@ See [PRIVACY.md](PRIVACY.md) for the complete privacy policy.
 
 ## Portable package
 
-The store ZIP contains only `manifest.json`, browser JavaScript/CSS/HTML, and PNG icons. It has no runtime dependency, bundler, native application, background server, or machine-specific path. Run `npm run package` when developing to create `dist/carrier-claim-assistant-vX.Y.Z.zip` with `manifest.json` at the archive root.
+The store ZIP contains only `manifest.json`, browser JavaScript/CSS/HTML, and PNG icons. It has no local runtime dependency, bundler, native application, local server, or machine-specific path. The optional return monitor is a private HTTPS service configured after installation; the extension still installs identically on any Chrome or Brave computer. Run `npm run package` when developing to create `dist/carrier-claim-assistant-vX.Y.Z.zip` with `manifest.json` at the archive root.
 
 ## Online CI/CD
 
 GitHub Actions performs all release automation:
 
 - `.github/workflows/ci.yml` runs the Node built-in test suite and builds a verified ZIP on every pull request and `main` push.
+- `.github/workflows/deploy-monitor.yml` applies D1 migrations and deploys the private Worker, dashboard, queue consumer, and morning schedule after Cloudflare secrets are configured.
 - `.github/workflows/release.yml` verifies a `vX.Y.Z` tag, creates the GitHub release, then uploads and submits the same artifact through the official Chrome Web Store API v2.
 - `.github/workflows/pages.yml` publishes the public privacy page from `docs/`.
 
