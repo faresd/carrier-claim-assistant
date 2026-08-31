@@ -1,10 +1,13 @@
 "use strict";
 
-if (typeof importScripts === "function") importScripts("shared/carrier-rules.js", "shared/claim-outcome.js");
+if (typeof importScripts === "function") importScripts("shared/carrier-rules.js", "shared/claim-outcome.js", "shared/tracking-records.js");
 
 const carrierRules = globalThis.CarrierClaimRules;
 const outcomeRules = globalThis.CarrierClaimOutcomeRules;
+const trackingRecords = globalThis.CarrierTrackingRecords;
 const CLAIM_OUTCOMES_KEY = "claimOutcomesByOrder";
+const TRACKED_ORDERS_KEY = "trackedOrdersByOrder";
+const MONITOR_ALERT_ALARM = "carrierReturnMonitorAlerts";
 
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
@@ -34,7 +37,11 @@ const DEFAULT_SENDER_PROFILE = {
 const DEFAULT_CLAIM_SETTINGS = {
   autoStatusCheck: true,
   chronopostStaleHours: 48,
-  laposteOverdueDays: 7
+  laposteOverdueDays: 7,
+  cloudSyncEnabled: false,
+  monitorServerUrl: "",
+  monitorAccessToken: "",
+  pickupNotifications: true
 };
 
 const STATUS_TIMEOUT_MS = 60000;
@@ -46,8 +53,192 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     senderProfile: { ...DEFAULT_SENDER_PROFILE, ...(stored.senderProfile || {}) },
     claimSettings: { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) }
   });
+  await scheduleMonitorAlertPolling();
   if (details.reason === "install") await chrome.runtime.openOptionsPage();
 });
+
+chrome.runtime.onStartup?.addListener(() => {
+  scheduleMonitorAlertPolling().then(refreshMonitorAlerts).catch(() => {});
+});
+
+async function scheduleMonitorAlertPolling() {
+  await chrome.alarms.create(MONITOR_ALERT_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
+}
+
+function normalizedMonitorConfig(settings = {}) {
+  let serverUrl = "";
+  try {
+    const url = new URL(String(settings.monitorServerUrl || "").trim());
+    if (url.protocol === "https:") serverUrl = url.origin;
+  } catch {}
+  return {
+    enabled: settings.cloudSyncEnabled === true && Boolean(serverUrl && settings.monitorAccessToken),
+    serverUrl,
+    token: String(settings.monitorAccessToken || "").trim(),
+    pickupNotifications: settings.pickupNotifications !== false
+  };
+}
+
+async function monitorConfig(overrides = null) {
+  if (overrides) return normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: overrides.serverUrl, monitorAccessToken: overrides.token });
+  const stored = await chrome.storage.local.get("claimSettings");
+  return normalizedMonitorConfig({ ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) });
+}
+
+async function monitorRequest(path, options = {}, overrides = null) {
+  const config = await monitorConfig(overrides);
+  if (!config.enabled) throw new Error("Return monitor cloud sync is not configured.");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${config.serverUrl}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${config.token}`,
+        "content-type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && !overrides) {
+      const stored = await chrome.storage.local.get("claimSettings");
+      await chrome.storage.local.set({
+        claimSettings: {
+          ...DEFAULT_CLAIM_SETTINGS,
+          ...(stored.claimSettings || {}),
+          cloudSyncEnabled: false,
+          monitorAccessToken: ""
+        }
+      });
+      throw new Error("This browser's return-monitor access was revoked. Pair it again in Settings.");
+    }
+    if (!response.ok) throw new Error(payload.error || `Monitor server returned HTTP ${response.status}.`);
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function testMonitorConnection(serverUrl, token = "") {
+  const config = normalizedMonitorConfig({
+    cloudSyncEnabled: true,
+    monitorServerUrl: serverUrl,
+    monitorAccessToken: token || "health-check"
+  });
+  if (!config.serverUrl) throw new Error("Enter a secure HTTPS monitor server URL.");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const headers = token ? { authorization: `Bearer ${String(token).trim()}` } : {};
+    const response = await fetch(`${config.serverUrl}/api/health`, { headers, signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok !== true) throw new Error(payload.error || `Monitor server returned HTTP ${response.status}.`);
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function saveTrackingRecord(order, result = {}, recommendation = null, outcome = null) {
+  if (!order?.orderId || !order?.trackingNumber || !trackingRecords) return null;
+  const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", CLAIM_OUTCOMES_KEY]);
+  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
+  const previous = records[order.orderId] || null;
+  const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
+  const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
+  const resolvedOutcome = outcome || stored[CLAIM_OUTCOMES_KEY]?.[order.orderId] || null;
+  const record = trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous });
+  records[order.orderId] = record;
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  const config = normalizedMonitorConfig(settings);
+  if (config.enabled) {
+    await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).catch(async (error) => {
+      records[order.orderId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: new Date().toISOString() };
+      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+    });
+  }
+  return record;
+}
+
+async function mergeRemoteTrackingRecords(remoteOrders = []) {
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
+  for (const remote of remoteOrders) {
+    if (!remote?.orderId) continue;
+    const local = records[remote.orderId] || {};
+    records[remote.orderId] = {
+      ...local,
+      ...remote,
+      sourceUrl: remote.amazonUrl || local.sourceUrl || "",
+      sellerAccountId: remote.accountId || local.sellerAccountId || "",
+      sellerAccountName: remote.accountName || local.sellerAccountName || ""
+    };
+  }
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return records;
+}
+
+async function trackedRecords({ refresh = true, orderIds = [] } = {}) {
+  if (refresh) {
+    const config = await monitorConfig();
+    if (config.enabled) {
+      const validOrderIds = [...new Set((orderIds || []).map(String).filter((value) => /^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(value)))].slice(0, 100);
+      const query = validOrderIds.length
+        ? `?limit=${validOrderIds.length}&order_ids=${encodeURIComponent(validOrderIds.join(","))}`
+        : "?limit=500";
+      const payload = await monitorRequest(`/api/orders${query}`).catch(() => null);
+      if (payload?.orders) return mergeRemoteTrackingRecords(payload.orders);
+    }
+  }
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  return stored[TRACKED_ORDERS_KEY] || {};
+}
+
+async function refreshMonitorAlerts() {
+  const config = await monitorConfig();
+  if (!config.enabled || !config.pickupNotifications) return { ok: true, skipped: true };
+  const payload = await monitorRequest("/api/orders?alerts=1&limit=100");
+  await mergeRemoteTrackingRecords(payload.orders || []);
+  for (const order of payload.orders || []) {
+    const notificationId = `return-pickup:${encodeURIComponent(order.recordId || order.orderId)}`;
+    await chrome.notifications.create(notificationId, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: "Returned package ready for pickup",
+      message: `Order ${order.orderId} · ${order.trackingNumber} is waiting to be collected.`,
+      contextMessage: order.accountName || order.carrierLabel || "Carrier Return Monitor",
+      priority: 2,
+      requireInteraction: true
+    });
+    await monitorRequest(`/api/orders/${encodeURIComponent(order.recordId || order.orderId)}/ack-pickup`, { method: "POST", body: "{}" });
+  }
+  return { ok: true, count: (payload.orders || []).length };
+}
+
+async function pairMonitorDevice({ serverUrl, code, deviceName }) {
+  const config = normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: serverUrl, monitorAccessToken: "temporary" });
+  if (!config.serverUrl || !/^\d{6}$/.test(String(code || "").trim())) throw new Error("Enter the server URL and six-digit pairing code.");
+  const response = await fetch(`${config.serverUrl}/api/pairing/claim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: String(code).trim(), deviceName: String(deviceName || navigator.userAgent || "Chrome/Brave browser").slice(0, 100) })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.token) throw new Error(payload.error || "Browser pairing failed.");
+  const stored = await chrome.storage.local.get("claimSettings");
+  const claimSettings = {
+    ...DEFAULT_CLAIM_SETTINGS,
+    ...(stored.claimSettings || {}),
+    cloudSyncEnabled: true,
+    monitorServerUrl: config.serverUrl,
+    monitorAccessToken: payload.token,
+    pickupNotifications: true
+  };
+  await chrome.storage.local.set({ claimSettings });
+  await scheduleMonitorAlertPolling();
+  return { ok: true, deviceId: payload.deviceId, deviceName: payload.deviceName };
+}
 
 async function startStatusCheck(message, sender) {
   const { carrier, order, auditId, auditWorkerTabId } = message;
@@ -98,6 +289,7 @@ async function deliverStatusResult(message, sender) {
   if (!request) return { ok: false, error: "Status request expired." };
 
   const result = { ...message.result, carrier: request.carrier, checkedAt: new Date().toISOString() };
+  await saveTrackingRecord(request.order, result);
   await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
     type: "ORDER_AUDIT_RESULT",
     auditId: request.auditId,
@@ -253,6 +445,7 @@ async function receiveOrderAuditDetails(message, sender) {
     return { ok: true, completed: true };
   }
   const carrier = carrierRules.detectCarrier(order);
+  await saveTrackingRecord(order, {}, carrierRules.recommendClaim(order, {}));
   if (!carrier.supported) {
     await finishOrderAuditLoad(request, {
       order,
@@ -387,6 +580,7 @@ async function handleClaimSubmissionSuccess(message, sender) {
   const outcomes = { ...(storedOutcomes[CLAIM_OUTCOMES_KEY] || {}) };
   if (outcome.orderId) outcomes[outcome.orderId] = outcome;
   await chrome.storage.local.set({ [CLAIM_OUTCOMES_KEY]: outcomes });
+  await saveTrackingRecord(claim.order || {}, claim.trackingStatus || {}, claim.recommendation || null, outcome);
   await chrome.storage.session.remove(key);
 
   let amazonResponse = null;
@@ -400,6 +594,38 @@ async function handleClaimSubmissionSuccess(message, sender) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "REGISTER_TRACKED_ORDER") {
+    saveTrackingRecord(message.order || {}, message.result || {}, message.recommendation || null, message.outcome || null)
+      .then((record) => sendResponse({ ok: true, record }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "GET_TRACKED_RECORDS") {
+    trackedRecords({ refresh: message.refresh !== false, orderIds: message.orderIds || [] })
+      .then((records) => sendResponse({ ok: true, records }))
+      .catch((error) => sendResponse({ ok: false, records: {}, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "PAIR_MONITOR_DEVICE") {
+    pairMonitorDevice(message)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "TEST_MONITOR_CONNECTION") {
+    testMonitorConnection(message.serverUrl, message.token)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "REFRESH_MONITOR_ALERTS") {
+    refreshMonitorAlerts().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (message?.type === "CHECK_CARRIER_STATUS") {
     startStatusCheck(message, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -521,7 +747,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 
+chrome.notifications?.onClicked.addListener((notificationId) => {
+  if (!notificationId.startsWith("return-pickup:")) return;
+  const recordId = decodeURIComponent(notificationId.slice("return-pickup:".length));
+  chrome.storage.local.get(TRACKED_ORDERS_KEY).then((stored) => {
+    const record = Object.values(stored[TRACKED_ORDERS_KEY] || {}).find((item) => item.recordId === recordId);
+    const url = record?.sourceUrl || (record?.orderId ? `https://sellercentral.amazon.fr/orders-v3/order/${record.orderId}` : "");
+    if (url) chrome.tabs.create({ url, active: true });
+  });
+});
+
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === MONITOR_ALERT_ALARM) {
+    refreshMonitorAlerts().catch(() => {});
+    return;
+  }
   if (alarm.name.startsWith("orderAuditLoadTimeout:")) {
     const auditId = alarm.name.slice("orderAuditLoadTimeout:".length);
     const requestKey = `orderAuditRequest:${auditId}`;

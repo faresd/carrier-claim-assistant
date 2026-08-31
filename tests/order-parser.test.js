@@ -47,6 +47,9 @@ test("extracts the claim fields from an Amazon Seller order", () => {
       shippingService: "COLISSIMO Livraison a domicile sans signature",
       itemValue: "€204.00",
       quantity: "1",
+      sellerAccountId: "sellercentral.amazon.fr",
+      sellerAccountName: "Seller Central account",
+      marketplaceId: "A13V1IB3VIYZZH",
       recipientName: "Arne Beispiel",
       recipientAddress1: "Musterstraße 10",
       recipientAddress2: "",
@@ -64,6 +67,15 @@ test("extracts the claim fields from an Amazon Seller order", () => {
     "10115 Berlin",
     "Allemagne"
   ]);
+});
+
+test("keeps Amazon merchant and marketplace context for multi-account history", () => {
+  const order = parseOrderDetails(
+    AMAZON_ORDER_TEXT,
+    "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333?mons_sel_mcid=amzn1.merchant.o.ACCOUNT123&mons_sel_mkid=amzn1.mp.o.A13V1IB3VIYZZH"
+  );
+  assert.equal(order.sellerAccountId, "amzn1.merchant.o.ACCOUNT123");
+  assert.equal(order.marketplaceId, "amzn1.mp.o.A13V1IB3VIYZZH");
 });
 
 test("fails closed when no tracking number is present", () => {

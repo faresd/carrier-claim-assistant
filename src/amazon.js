@@ -143,6 +143,13 @@
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
     const outcomes = { ...(stored.claimOutcomesByOrder || {}), [order.orderId]: outcome };
     await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
+    await chrome.runtime.sendMessage({
+      type: "REGISTER_TRACKED_ORDER",
+      order,
+      result: state.result || {},
+      recommendation: state.recommendation || null,
+      outcome
+    }).catch(() => {});
     await applyClaimOutcome(outcome);
     return true;
   }
@@ -528,7 +535,7 @@
   }
 
   async function refreshOrderFromPage() {
-    const nextOrder = parser.parseOrderDetails(document.body.innerText, location.href);
+    const nextOrder = parser.enrichSellerContext(parser.parseOrderDetails(document.body.innerText, location.href), document, location.href);
     const signature = orderSignature(nextOrder);
     if (signature === lastOrderSignature) return;
     lastOrderSignature = signature;
@@ -554,6 +561,14 @@
       setLaunchState("warning", `Unsupported carrier: ${carrier.label}`);
       return;
     }
+
+    chrome.runtime.sendMessage({
+      type: "REGISTER_TRACKED_ORDER",
+      order,
+      result: state.result || {},
+      recommendation: state.recommendation || null,
+      outcome: state.outcome || null
+    }).catch(() => {});
 
     if (!shipmentChanged) return;
 

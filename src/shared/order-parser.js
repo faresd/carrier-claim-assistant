@@ -100,6 +100,13 @@
     const deliverByMatch = normalizedText.match(/Deliver by:\s*([^\n]+(?:\s+to\s+[^\n]+)?)/i);
     const carrier = valueAfter(lines, "Shipping Carrier", (line) => !/^tracking id$/i.test(line));
     const shippingService = valueAfter(lines, "Shipping service", (line) => !/^fulfilment$/i.test(line));
+    let sellerAccountId = "";
+    let marketplaceId = "";
+    try {
+      const url = new URL(pageUrl || "", "https://sellercentral.amazon.fr");
+      sellerAccountId = clean(url.searchParams.get("mons_sel_mcid") || url.searchParams.get("merchantId") || "");
+      marketplaceId = clean(url.searchParams.get("mons_sel_mkid") || url.searchParams.get("marketplaceId") || "");
+    } catch {}
 
     return {
       sourceUrl: pageUrl || "",
@@ -111,6 +118,9 @@
       shippingService,
       itemValue: subtotalMatches.length ? `€${subtotalMatches[0][1]}` : "",
       quantity: "1",
+      sellerAccountId: sellerAccountId || "sellercentral.amazon.fr",
+      sellerAccountName: sellerAccountId || "Seller Central account",
+      marketplaceId: marketplaceId || "A13V1IB3VIYZZH",
       ...parseAddress(lines),
       ...parseProduct(lines)
     };
@@ -127,7 +137,38 @@
     ].map(clean).filter(Boolean);
   }
 
-  const api = { clean, linesOf, parseOrderDetails, destinationLines };
+  function enrichSellerContext(order, root, pageUrl) {
+    const next = { ...(order || {}) };
+    const urls = [pageUrl || next.sourceUrl || ""];
+    for (const link of root?.querySelectorAll?.('a[href*="mons_sel_mcid"],a[href*="merchantId"]') || []) {
+      if (link.href) urls.push(link.href);
+    }
+    for (const value of urls) {
+      try {
+        const url = new URL(value, "https://sellercentral.amazon.fr");
+        const accountId = clean(url.searchParams.get("mons_sel_mcid") || url.searchParams.get("merchantId") || "");
+        const marketplaceId = clean(url.searchParams.get("mons_sel_mkid") || url.searchParams.get("marketplaceId") || "");
+        if (accountId) next.sellerAccountId = accountId;
+        if (marketplaceId) next.marketplaceId = marketplaceId;
+        if (accountId) break;
+      } catch {}
+    }
+    const accountControl = [
+      "#sc-mkt-switcher-dp-link",
+      '[data-testid*="merchant" i]',
+      '[aria-label*="merchant" i]',
+      '[class*="merchant-name" i]'
+    ].map((selector) => root?.querySelector?.(selector)).find(Boolean);
+    const accountName = clean(accountControl?.innerText || accountControl?.textContent || "");
+    if (accountName && accountName.length <= 160 && !/^(amazon|france|settings|help)$/i.test(accountName)) {
+      next.sellerAccountName = accountName;
+    } else if (!next.sellerAccountName || next.sellerAccountName === "Seller Central account") {
+      next.sellerAccountName = next.sellerAccountId || "Seller Central account";
+    }
+    return next;
+  }
+
+  const api = { clean, linesOf, parseOrderDetails, destinationLines, enrichSellerContext };
   root.LaPosteOrderParser = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

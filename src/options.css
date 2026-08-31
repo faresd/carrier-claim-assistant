@@ -13,6 +13,7 @@ header { margin-bottom: 28px; }
 h1 { margin: 8px 0 10px; font-size: 38px; line-height: 1.1; }
 h2 { font-size: 18px; margin: 0 0 18px; }
 p { color: #5d6978; line-height: 1.55; }
+.section-copy { margin: -8px 0 18px; font-size: 13px; }
 form, aside { background: white; border: 1px solid #dde3ea; border-radius: 16px; box-shadow: 0 10px 30px rgba(21, 41, 66, .06); }
 section { padding: 28px; border-bottom: 1px solid #e8edf2; }
 .grid { display: grid; gap: 18px; }
@@ -26,6 +27,14 @@ input:focus, select:focus { outline: 3px solid rgba(0, 98, 173, .15); border-col
 .form-footer { display: flex; align-items: center; justify-content: flex-end; gap: 18px; padding: 22px 28px; }
 #status { color: #25713b; font-weight: 700; }
 button { border: 0; border-radius: 9px; background: #0062ad; color: white; padding: 12px 18px; font: inherit; font-weight: 800; cursor: pointer; }
+.inline-actions { display: flex; gap: 10px; margin-top: 18px; }
+.button-secondary { background: white; color: #334256; border: 1px solid #bdc7d3; }
+.button-secondary:hover { background: #f5f7f9; }
+.field-action { display: flex; align-items: end; }
+.field-action button { width: 100%; }
+.advanced-settings { padding: 4px 0; color: #5d6978; }
+.advanced-settings summary { cursor: pointer; font-size: 13px; font-weight: 750; }
+.advanced-settings label { margin-top: 14px; }
 aside { margin-top: 18px; padding: 20px 24px; }
 aside p { margin: 6px 0 0; font-size: 14px; }
 @media (max-width: 620px) { .grid--2 { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } }

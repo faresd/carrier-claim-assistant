@@ -18,7 +18,8 @@ const optionsHtml = fs.readFileSync(path.join(root, "src", "options.html"), "utf
 test("manifest wires the Amazon order assistant and supported carrier pages", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.version, packageJson.version);
-  assert.deepEqual(manifest.permissions, ["storage", "alarms"]);
+  assert.deepEqual(manifest.permissions, ["storage", "alarms", "notifications"]);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
 
   const amazon = manifest.content_scripts.find((entry) =>
     entry.matches.includes("https://sellercentral.amazon.fr/orders-v3/order/*")
@@ -27,6 +28,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
     "src/shared/order-parser.js",
     "src/shared/carrier-rules.js",
     "src/shared/claim-outcome.js",
+    "src/shared/tracking-records.js",
     "src/order-auditor.js",
     "src/amazon.js"
   ]);
@@ -37,6 +39,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
   assert.deepEqual(ordersList.js, [
     "src/shared/carrier-rules.js",
     "src/shared/order-list-rules.js",
+    "src/shared/tracking-records.js",
     "src/orders-list.js"
   ]);
   assert.ok(ordersList.css.includes("src/assistant.css"));

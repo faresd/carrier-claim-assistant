@@ -11,6 +11,7 @@ const sentMessages = [];
 const removedTabs = [];
 const updatedTabs = [];
 const alarms = new Map();
+const notifications = [];
 let nextTabId = 100;
 
 function storageArea(target) {
@@ -31,7 +32,9 @@ function storageArea(target) {
 global.chrome = {
   runtime: {
     onInstalled: { addListener(listener) { listeners.installed = listener; } },
+    onStartup: { addListener(listener) { listeners.startup = listener; } },
     onMessage: { addListener(listener) { listeners.message = listener; } },
+    getURL(path) { return `chrome-extension://test/${path}`; },
     async openOptionsPage() {}
   },
   storage: {
@@ -60,11 +63,16 @@ global.chrome = {
     async create(name, options) { alarms.set(name, options); },
     async clear(name) { return alarms.delete(name); },
     onAlarm: { addListener(listener) { listeners.alarm = listener; } }
+  },
+  notifications: {
+    async create(id, options) { notifications.push({ id, options }); },
+    onClicked: { addListener(listener) { listeners.notificationClicked = listener; } }
   }
 };
 
 require("../src/shared/carrier-rules.js");
 require("../src/shared/claim-outcome.js");
+require("../src/shared/tracking-records.js");
 require("../src/background.js");
 
 function send(message, sender = {}) {
@@ -84,6 +92,52 @@ test("merges new defaults without overwriting existing sender settings", async (
   assert.equal(local.senderProfile.contactTitle, "Monsieur");
   assert.equal(local.claimSettings.autoStatusCheck, false);
   assert.equal(local.claimSettings.chronopostStaleHours, 48);
+  assert.equal(local.claimSettings.cloudSyncEnabled, false);
+  assert.ok(alarms.has("carrierReturnMonitorAlerts"));
+});
+
+test("tests a new monitor server before a browser token is paired", async () => {
+  const originalFetch = global.fetch;
+  let request = null;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ ok: true, service: "carrier-return-monitor" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const response = await send({ type: "TEST_MONITOR_CONNECTION", serverUrl: "https://monitor.example", token: "" });
+    assert.deepEqual(response, { ok: true });
+    assert.equal(request.url, "https://monitor.example/api/health");
+    assert.equal(request.options.headers.authorization, undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("a revoked device token disables cloud sync without deleting local history", async () => {
+  const originalFetch = global.fetch;
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://monitor.example",
+    monitorAccessToken: "revoked-token"
+  };
+  local.trackedOrdersByOrder = { "111-2222222-3333333": { orderId: "111-2222222-3333333", trackingState: "returning" } };
+  global.fetch = async () => new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" }
+  });
+  try {
+    const response = await send({ type: "GET_TRACKED_RECORDS", refresh: true });
+    assert.equal(response.ok, true);
+    assert.equal(response.records["111-2222222-3333333"].trackingState, "returning");
+    assert.equal(local.claimSettings.cloudSyncEnabled, false);
+    assert.equal(local.claimSettings.monitorAccessToken, "");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("starts a private La Poste tracking check and arms cleanup", async () => {
@@ -217,6 +271,8 @@ test("stores a successful claim, notifies Amazon, and clears the pending submiss
   assert.equal(outcome.reference, "LP-8472619");
   assert.equal(outcome.trackingNumber, "CC000000002FR");
   assert.match(outcome.sellerNote, /Référence : LP-8472619/);
+  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimStatus, "sent");
+  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimReference, "LP-8472619");
   assert.equal(sentMessages.at(-1).tabId, 55);
   assert.equal(sentMessages.at(-1).message.type, "CLAIM_SUBMISSION_SUCCESS");
 });
