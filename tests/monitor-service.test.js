@@ -31,6 +31,7 @@ test("monitor schema keeps multi-account history, idempotent jobs, devices, and 
   assert.match(migration, /PRIMARY KEY\(run_date, record_id\)/);
   assert.match(migration, /PRIMARY KEY\(record_id, device_id\)/);
   assert.match(worker, /`\$\{accountId\}\|\$\{marketplaceId\}\|\$\{orderId\}`/);
+  assert.doesNotMatch(worker, /input\.recordId\s*\|\|/);
 });
 
 test("browser pairing is short-lived, rate-limited, and revocable from the dashboard", () => {
@@ -54,4 +55,11 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
   assert.match(worker, /order_ids/);
+});
+
+test("dashboard assets are protected by a restrictive browser security policy", () => {
+  assert.match(worker, /content-security-policy/);
+  assert.match(worker, /frame-ancestors 'none'/);
+  assert.match(worker, /x-content-type-options/);
+  assert.match(worker, /permissions-policy/);
 });

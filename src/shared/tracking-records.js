@@ -68,7 +68,7 @@
     return {
       ...(previous || {}),
       ...safeOrder,
-      recordId: previous?.recordId || `${sellerAccountId}|${marketplaceId}|${orderId}`,
+      recordId: `${sellerAccountId}|${marketplaceId}|${orderId}`,
       orderId,
       trackingNumber: safeOrder.trackingNumber || previous?.trackingNumber || "",
       sellerAccountId,

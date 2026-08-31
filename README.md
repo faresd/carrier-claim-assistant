@@ -83,6 +83,7 @@ The store ZIP contains only `manifest.json`, browser JavaScript/CSS/HTML, and PN
 GitHub Actions performs all release automation:
 
 - `.github/workflows/ci.yml` runs the Node built-in test suite and builds a verified ZIP on every pull request and `main` push.
+- `.github/workflows/deploy-monitor.yml` applies D1 migrations and deploys the private Worker, dashboard, queue consumer, and morning schedule after Cloudflare secrets are configured.
 - `.github/workflows/release.yml` verifies a `vX.Y.Z` tag, creates the GitHub release, then uploads and submits the same artifact through the official Chrome Web Store API v2.
 - `.github/workflows/pages.yml` publishes the public privacy page from `docs/`.
 

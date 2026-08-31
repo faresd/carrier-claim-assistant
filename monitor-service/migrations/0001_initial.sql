@@ -45,11 +45,12 @@ CREATE INDEX IF NOT EXISTS orders_account_idx ON orders(account_id, updated_at D
 CREATE UNIQUE INDEX IF NOT EXISTS orders_account_order_idx ON orders(account_id, marketplace_id, order_id);
 
 CREATE TABLE IF NOT EXISTS seller_accounts (
-  account_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
   account_name TEXT NOT NULL DEFAULT '',
   marketplace_id TEXT NOT NULL DEFAULT '',
   first_seen_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(account_id, marketplace_id)
 );
 
 CREATE TABLE IF NOT EXISTS tracking_events (

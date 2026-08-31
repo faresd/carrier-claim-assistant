@@ -51,3 +51,19 @@ test("an Amazon page reload does not erase a server-return or pickup state", () 
   assert.equal(record.trackingState, "pickup_ready");
   assert.equal(record.statusText, previous.statusText);
 });
+
+test("enriching the seller account corrects an earlier fallback record key", () => {
+  const record = records.buildRecord({
+    order: {
+      orderId: "111-2222222-3333333",
+      trackingNumber: "CC000000001FR",
+      sellerAccountId: "merchant-real",
+      marketplaceId: "A13V1IB3VIYZZH"
+    },
+    previous: {
+      recordId: "sellercentral.amazon.fr|A13V1IB3VIYZZH|111-2222222-3333333",
+      trackingState: "unknown"
+    }
+  });
+  assert.equal(record.recordId, "merchant-real|A13V1IB3VIYZZH|111-2222222-3333333");
+});

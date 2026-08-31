@@ -35,6 +35,17 @@ function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
 }
 
+function secureAssetHeaders(headers) {
+  const next = new Headers(headers);
+  next.set("content-security-policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'");
+  next.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
+  next.set("referrer-policy", "no-referrer");
+  next.set("strict-transport-security", "max-age=31536000; includeSubDomains");
+  next.set("x-content-type-options", "nosniff");
+  next.set("x-frame-options", "DENY");
+  return next;
+}
+
 function bearer(request) {
   return request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || "";
 }
@@ -75,7 +86,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   const accountId = clean(input.sellerAccountId || input.accountId || "default", 180);
   const marketplaceId = clean(input.marketplaceId || "A13V1IB3VIYZZH", 180);
   return {
-    recordId: clean(input.recordId || `${accountId}|${marketplaceId}|${orderId}`, 500),
+    recordId: `${accountId}|${marketplaceId}|${orderId}`,
     accountId,
     accountName: clean(input.sellerAccountName || input.accountName || accountId, 160),
     marketplaceId,
@@ -169,7 +180,7 @@ async function upsertOrder(db, input) {
     order.pickupNotifiedAt, order.resolvedAt, order.resolutionNote, order.firstSeenAt, order.updatedAt
   ).run();
   await db.prepare(`INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET account_name = excluded.account_name, marketplace_id = excluded.marketplace_id, updated_at = excluded.updated_at`)
+    VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, marketplace_id) DO UPDATE SET account_name = excluded.account_name, updated_at = excluded.updated_at`)
     .bind(order.accountId, order.accountName, order.marketplaceId, order.firstSeenAt, order.updatedAt).run();
   return order;
 }
@@ -494,7 +505,8 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
     if (url.pathname === "/api/health") return json({ ok: true, service: "carrier-return-monitor" }, 200, corsHeaders(request));
     if (url.pathname.startsWith("/api/")) return api(request, env, url);
-    return env.ASSETS.fetch(request);
+    const asset = await env.ASSETS.fetch(request);
+    return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers: secureAssetHeaders(asset.headers) });
   },
   async scheduled(_event, env, ctx) {
     if (!shouldRunMorningMonitor(new Date())) return;
