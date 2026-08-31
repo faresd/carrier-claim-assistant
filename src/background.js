@@ -39,7 +39,7 @@ const DEFAULT_CLAIM_SETTINGS = {
   chronopostStaleHours: 48,
   laposteOverdueDays: 7,
   cloudSyncEnabled: false,
-  monitorServerUrl: "",
+  monitorServerUrl: "https://tracking.cheaply.fr",
   monitorAccessToken: "",
   pickupNotifications: true
 };

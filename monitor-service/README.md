@@ -2,6 +2,8 @@
 
 The monitor is the private cloud companion for Carrier Claim Assistant. It is designed around the operational goal: recover returned parcels before the pickup deadline and keep lost parcels visible until they are resolved.
 
+Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS record and TLS certificate through the Worker's custom-domain route.
+
 ## Architecture
 
 - **Cloudflare Worker**: authenticated order API, admin dashboard, browser pairing, and scheduled monitor.

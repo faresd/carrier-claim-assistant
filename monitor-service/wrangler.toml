@@ -9,6 +9,10 @@ binding = "ASSETS"
 [triggers]
 crons = ["*/15 * * * *"]
 
+[[routes]]
+pattern = "tracking.cheaply.fr"
+custom_domain = true
+
 [[queues.producers]]
 binding = "TRACKING_QUEUE"
 queue = "carrier-tracking-checks"

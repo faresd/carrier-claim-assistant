@@ -93,6 +93,7 @@ test("merges new defaults without overwriting existing sender settings", async (
   assert.equal(local.claimSettings.autoStatusCheck, false);
   assert.equal(local.claimSettings.chronopostStaleHours, 48);
   assert.equal(local.claimSettings.cloudSyncEnabled, false);
+  assert.equal(local.claimSettings.monitorServerUrl, "https://tracking.cheaply.fr");
   assert.ok(alarms.has("carrierReturnMonitorAlerts"));
 });
 
