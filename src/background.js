@@ -196,6 +196,7 @@ function buildClaimPayload(order, record, senderProfile, recommendation, result 
       sourceUrl: order.sourceUrl || "",
       orderId: order.orderId || "",
       trackingNumber: order.trackingNumber || "",
+      orderDate: order.orderDate || "",
       shipDate: order.shipDate || "",
       deliverBy: order.deliverBy || "",
       carrier: order.carrier || record.carrierLabel || "",
@@ -465,7 +466,12 @@ async function deliverStatusResult(message, sender) {
   const request = stored[key];
   if (!request) return { ok: false, error: "Status request expired." };
 
-  const result = { ...message.result, carrier: request.carrier, checkedAt: new Date().toISOString() };
+  const result = {
+    ...message.result,
+    carrier: request.carrier,
+    checkedAt: new Date().toISOString(),
+    source: `carrier-page-${request.carrier}`
+  };
   await saveTrackingRecord(request.order, result);
   await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
     type: "ORDER_AUDIT_RESULT",

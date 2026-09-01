@@ -12,6 +12,7 @@ const auth = read("monitor-service", "src", "auth.mjs");
 const migration = read("monitor-service", "migrations", "0001_initial.sql");
 const deletionIndexes = read("monitor-service", "migrations", "0002_resolved_deletion_indexes.sql");
 const deletionTombstones = read("monitor-service", "migrations", "0003_deleted_order_tombstones.sql");
+const orderTrackingMetadata = read("monitor-service", "migrations", "0004_order_tracking_metadata.sql");
 const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
@@ -53,6 +54,9 @@ test("monitor schema keeps multi-account history, idempotent jobs, devices, clai
   assert.match(deletionTombstones, /PRIMARY KEY\(account_id, marketplace_id, order_id\)/);
   assert.match(deletionTombstones, /deleted_orders_order_idx[\s\S]*ON deleted_orders\(order_id, marketplace_id\)/);
   assert.match(deletionTombstones, /PRAGMA optimize/);
+  assert.match(orderTrackingMetadata, /ADD COLUMN order_date/);
+  assert.match(orderTrackingMetadata, /ADD COLUMN tracking_source/);
+  assert.match(worker, /orderDate:\s*clean\(input\.orderDate/);
   assert.match(worker, /"notification_receipts", "deleted_orders"/);
   assert.match(worker, /\/api\/claim-launch\/redeem/);
   assert.match(worker, /launch-claim/);
@@ -77,6 +81,10 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   }
   assert.match(dashboard, /id="account-filter"/);
   assert.match(dashboard, /<th>Amazon account<\/th>/);
+  assert.match(dashboard, /<th>Order date<\/th>/);
+  assert.match(dashboardScript, /order\.orderDate/);
+  assert.match(dashboardScript, /La Poste Suivi API v2/);
+  assert.match(dashboardScript, /La Poste Suivi API v1 fallback/);
   assert.match(dashboardScript, /class="account-name"/);
   assert.match(dashboard, /id="claim-dialog"/);
   assert.match(dashboard, /id="claim-reason"/);
@@ -113,6 +121,11 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /chronopost\.fr\/tracking-no-cms\/suivi-page/);
   assert.match(dashboardScript, /laposte\.fr\/outils\/suivre-vos-envois\?code=/);
   assert.match(dashboardScript, /Open official carrier tracking/);
+  assert.match(dashboardScript, /data-recheck/);
+  assert.match(dashboardScript, /Recheck this parcel now/);
+  assert.match(dashboardScript, /\/recheck/);
+  assert.match(worker, /enqueueOrderRecheck/);
+  assert.match(worker, /force:\s*true/);
 });
 
 test("dashboard assets are protected by a restrictive browser security policy", () => {

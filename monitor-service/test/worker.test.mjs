@@ -6,6 +6,7 @@ import monitorWorker, {
   allowedApiOrigin,
   classifyTrackingState,
   dashboardOrderSummary,
+  enqueueOrderRecheck,
   enqueueDailyMonitor,
   fetchOfficialTracking,
   fetchOpenAIInterpretation,
@@ -48,6 +49,7 @@ async function monitorDatabase() {
   database.exec(await readFile(new URL("../migrations/0001_initial.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0002_resolved_deletion_indexes.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0003_deleted_order_tombstones.sql", import.meta.url), "utf8"));
+  database.exec(await readFile(new URL("../migrations/0004_order_tracking_metadata.sql", import.meta.url), "utf8"));
   return { database, db: new D1SqliteAdapter(database) };
 }
 
@@ -90,6 +92,42 @@ test("summarizes every dashboard queue independently of the current page", async
   assert.deepEqual(summary.accounts, [{ accountId: "merchant-one", accountName: "Cheaply France" }]);
   const searched = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders?q=Camille"));
   assert.deepEqual(searched.counts, { all: 1, pickup: 0, returning: 0, lost: 1, returned: 0, resolved: 0 });
+});
+
+test("queues an explicit per-order recheck and allows fresh carrier evidence to replace delivered", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: { async sendBatch(messages) { queued.push(...messages); } }
+  };
+  const order = await upsertOrder(db, {
+    orderId: "400-1234567-1234567",
+    trackingNumber: "8U12345678901",
+    sellerAccountId: "merchant-one",
+    marketplaceId: "A13V1IB3VIYZZH",
+    carrierId: "laposte",
+    orderDate: "2 September 2026, 09:15 CEST",
+    trackingState: "delivered"
+  });
+  const result = await enqueueOrderRecheck(env, order.recordId, new Date("2026-09-02T08:30:00.000Z"));
+  assert.equal(result.queuedCount, 1);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].body.force, true);
+  let acknowledged = false;
+  await processTrackingMessage({
+    body: queued[0].body,
+    ack() { acknowledged = true; },
+    retry() {}
+  }, env, { fetchImpl: async () => Response.json({ shipment: { event: [
+    { date: "2026-09-02T08:31:00.000Z", label: "Votre colis ne peut plus être localisé.", code: "PERDU" }
+  ] } }) });
+  assert.equal(acknowledged, true);
+  assert.equal(database.prepare("SELECT tracking_state FROM orders WHERE record_id = ?").get(order.recordId).tracking_state, "lost");
+  assert.equal(database.prepare("SELECT order_date FROM orders WHERE record_id = ?").get(order.recordId).order_date, "2 September 2026, 09:15 CEST");
+  assert.equal(database.prepare("SELECT tracking_source FROM orders WHERE record_id = ?").get(order.recordId).tracking_source, "laposte-suivi-v2");
 });
 
 test("lets the newest delivered or lost event override older return history", () => {

@@ -6,6 +6,8 @@ const { parseOrderDetails, destinationLines } = require("../src/shared/order-par
 
 const AMAZON_ORDER_TEXT = `
 Order details  Order ID: # 111-2222222-3333333
+Purchase date
+Thu, 16 Jul 2026, 12:30 CEST
 Ship to
 Arne Beispiel
 Musterstraße 10
@@ -41,6 +43,7 @@ test("extracts the claim fields from an Amazon Seller order", () => {
       sourceUrl: "https://sellercentral.amazon.fr/orders-v3/order/example",
       orderId: "111-2222222-3333333",
       trackingNumber: "CC000000002FR",
+      orderDate: "Thu, 16 Jul 2026, 12:30 CEST",
       shipDate: "Fri, 17 Jul 2026",
       deliverBy: "",
       carrier: "Colissimo",
@@ -76,6 +79,16 @@ test("keeps Amazon merchant and marketplace context for multi-account history", 
   );
   assert.equal(order.sellerAccountId, "amzn1.merchant.o.ACCOUNT123");
   assert.equal(order.marketplaceId, "amzn1.mp.o.A13V1IB3VIYZZH");
+});
+
+test("extracts the French Amazon order date label", () => {
+  const order = parseOrderDetails(`
+Order details Order ID: # 444-5555555-6666666
+Date de commande : 2 septembre 2026, 09:15 CEST
+Tracking ID
+CC000000001FR
+  `);
+  assert.equal(order.orderDate, "2 septembre 2026, 09:15 CEST");
 });
 
 test("fails closed when no tracking number is present", () => {

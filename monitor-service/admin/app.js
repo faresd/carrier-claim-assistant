@@ -51,6 +51,15 @@
       : `https://www.laposte.fr/outils/suivre-vos-envois?code=${trackingNumber}`;
   }
 
+  function trackingSourceLabel(value) {
+    return {
+      "laposte-suivi-v2": "La Poste Suivi API v2",
+      "laposte-suivi-v1": "La Poste Suivi API v1 fallback",
+      "carrier-page-laposte": "La Poste tracking page",
+      "carrier-page-chronopost": "Chronopost tracking page"
+    }[value] || "Tracking source not recorded";
+  }
+
   function claimPackage(order) {
     try {
       const payload = JSON.parse(order.claimPayload || "{}");
@@ -139,12 +148,14 @@
           : "No claim queued";
       return `<tr>
         <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>
+        <td><strong class="order-date">${escapeHtml(order.orderDate || "Not captured")}</strong></td>
         <td><strong class="account-name">${escapeHtml(order.accountName || order.accountId || "Amazon seller")}</strong><span class="subline">${escapeHtml(order.accountId || "Account ID not captured")}</span></td>
         <td><a class="tracking tracking-link" href="${escapeHtml(carrierTrackingUrl(order))}" target="_blank" rel="noopener" title="Open official carrier tracking">${escapeHtml(order.trackingNumber)}</a><span class="subline">${escapeHtml(order.carrierLabel || order.carrierId)}</span></td>
-        <td><span class="state state--${escapeHtml(order.trackingState)}">${escapeHtml(labelFor(order.trackingState))}</span><span class="subline">Checked ${escapeHtml(dateTime(order.checkedAt))}</span></td>
+        <td><span class="state state--${escapeHtml(order.trackingState)}">${escapeHtml(labelFor(order.trackingState))}</span><span class="subline">Checked ${escapeHtml(dateTime(order.checkedAt))}</span><span class="api-source">${escapeHtml(trackingSourceLabel(order.trackingSource))}</span></td>
         <td class="status-copy">${escapeHtml(order.statusText || "Waiting for the morning check")}<span class="subline">Updated ${escapeHtml(dateTime(order.updatedAt))}</span></td>
         <td class="claim">${claim}</td>
         <td><div class="row-actions">
+          <button class="recheck" type="button" data-recheck="${escapeHtml(order.recordId)}" aria-label="Recheck order ${escapeHtml(order.orderId)}" title="Recheck this parcel now">↻</button>
           <button type="button" data-detail="${escapeHtml(order.recordId)}">Details</button>
           ${!["resolved", "delivered"].includes(order.trackingState) && order.claimStatus !== "sent" ? `<button type="button" data-launch-claim="${escapeHtml(order.recordId)}">Start ${/chrono/i.test(order.carrierId || order.carrierLabel) ? "Chronopost" : "La Poste"} claim</button>` : ""}
           ${["returning", "pickup_ready"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Confirm received</button>` : ""}
@@ -224,7 +235,8 @@
       ["Seller account", order.accountName || order.accountId], ["Marketplace", order.marketplaceId],
       ["Tracking state", labelFor(order.trackingState)], ["Tracking number", order.trackingNumber],
       ["Carrier", order.carrierLabel || order.carrierId], ["Last checked", dateTime(order.checkedAt)],
-      ["Shipment dates", [order.shipDate && `Shipped ${order.shipDate}`, order.deliverBy && `Deliver by ${order.deliverBy}`].filter(Boolean).join(" · ")],
+      ["Tracking source", trackingSourceLabel(order.trackingSource)],
+      ["Amazon order date", order.orderDate], ["Shipment dates", [order.shipDate && `Shipped ${order.shipDate}`, order.deliverBy && `Deliver by ${order.deliverBy}`].filter(Boolean).join(" · ")],
       ["Recipient title", claimData.recipientTitle], ["Recipient", order.recipientName], ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
       ["Sender", [sender.companyName, sender.contactFirstName, sender.contactLastName].filter(Boolean).join(" ")],
       ["Sender contact", [sender.email, sender.phone].filter(Boolean).join(" · ")],
@@ -371,13 +383,22 @@
   body.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    const recordId = button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.launchClaim || button.dataset.delete;
+    const recordId = button.dataset.recheck || button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.launchClaim || button.dataset.delete;
     const order = state.orders.find((item) => item.recordId === recordId);
     if (!order) return;
     if (button.dataset.detail) return showDetails(order);
     if (button.dataset.launchClaim) return openClaimDialog(order);
     button.disabled = true;
     try {
+      if (button.dataset.recheck) {
+        await api(`/api/orders/${encodeURIComponent(recordId)}/recheck`, { method: "POST", body: "{}" });
+        order.statusText = "Fresh carrier check queued…";
+        render();
+        notify(`Rechecking order ${order.orderId}.`);
+        setTimeout(load, 3000);
+        setTimeout(load, 12000);
+        return;
+      }
       if (button.dataset.resolve) {
         const returned = ["returning", "pickup_ready"].includes(order.trackingState);
         if (!confirm(returned ? `Confirm that returned order ${order.orderId} was physically received?` : `Mark order ${order.orderId} as resolved?`)) return;

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Carrier Claim Assistant",
   "description": "Checks Colissimo, La Poste, and Chronopost delivery status from Amazon Seller orders and prepares the appropriate claim.",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "permissions": ["storage", "alarms", "notifications"],
   "optional_host_permissions": ["https://tracking.cheaply.fr/*"],
   "host_permissions": [

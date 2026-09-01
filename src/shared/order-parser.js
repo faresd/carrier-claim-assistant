@@ -96,6 +96,9 @@
     const orderIdMatch = normalizedText.match(/Order ID:\s*#?\s*([0-9-]+)/i);
     const trackingMatch = normalizedText.match(/Tracking ID\s*:?\s*\n\s*([A-Z]{2}[A-Z0-9]{9,13}[A-Z]{2}|[A-Z0-9-]{8,25})/i);
     const subtotalMatches = [...normalizedText.matchAll(/Item subtotal:\s*\n?\s*€\s*([\d.,]+)/gi)];
+    const orderDateMatch = normalizedText.match(/(?:Purchase date|Order date|Date d'achat|Date de commande)\s*:?\s*(?:\n\s*)?([^\n]+)/i);
+    const orderDateCandidate = orderDateMatch ? clean(orderDateMatch[1]) : "";
+    const orderDate = /\d{4}/.test(orderDateCandidate) ? orderDateCandidate : "";
     const shipDate = valueAfter(lines, "Ship date", (line) => /\d{4}|mon|tue|wed|thu|fri|sat|sun/i.test(line));
     const deliverByMatch = normalizedText.match(/Deliver by:\s*([^\n]+(?:\s+to\s+[^\n]+)?)/i);
     const carrier = valueAfter(lines, "Shipping Carrier", (line) => !/^tracking id$/i.test(line));
@@ -112,6 +115,7 @@
       sourceUrl: pageUrl || "",
       orderId: orderIdMatch ? orderIdMatch[1] : "",
       trackingNumber: trackingMatch ? trackingMatch[1].toUpperCase() : "",
+      orderDate,
       shipDate,
       deliverBy: deliverByMatch ? clean(deliverByMatch[1]) : "",
       carrier,
