@@ -29,6 +29,16 @@ test("fails before deployment when La Poste rejects the configured key", async (
   );
 });
 
+test("can explicitly continue infrastructure deployment while provider approval is pending", async () => {
+  const result = await verifyLaPosteAccess({
+    apiKey: "pending-key",
+    allowPending: true,
+    fetchImpl: async () => Response.json({ code: "PENDING_APPROVAL" }, { status: 403 })
+  });
+
+  assert.deepEqual(result, { authorized: false, pending: true });
+});
+
 test("fails safely when Suivi v2 is unavailable or returns a non-JSON page", async () => {
   await assert.rejects(
     verifyLaPosteAccess({

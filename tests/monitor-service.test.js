@@ -153,6 +153,8 @@ test("monitor deployment fails before mutation when required production configur
   assert.match(ssoPreflight, /S256/);
   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
   assert.match(deployment, /node monitor-service\/scripts\/verify-laposte-access\.mjs/);
+  assert.match(deployment, /allow_pending_laposte/);
+  assert.match(lapostePreflight, /LAPOSTE_ALLOW_PENDING/);
   assert.match(lapostePreflight, /api\.laposte\.fr\/suivi\/v2\/idships/);
   assert.match(lapostePreflight, /X-Okapi-Key/);
   assert.match(lapostePreflight, /\[401, 403\]/);
