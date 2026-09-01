@@ -84,7 +84,12 @@ function send(message, sender = {}) {
 
 test("merges new defaults without overwriting existing sender settings", async () => {
   local.senderProfile = { email: "custom@example.com", city: "Paris" };
-  local.claimSettings = { autoStatusCheck: false };
+  local.claimSettings = {
+    autoStatusCheck: false,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://old-monitor.example",
+    monitorAccessToken: "old-origin-token"
+  };
   await listeners.installed({ reason: "update" });
   assert.equal(local.senderProfile.email, "custom@example.com");
   assert.equal(local.senderProfile.city, "Paris");
@@ -94,6 +99,7 @@ test("merges new defaults without overwriting existing sender settings", async (
   assert.equal(local.claimSettings.chronopostStaleHours, 48);
   assert.equal(local.claimSettings.cloudSyncEnabled, false);
   assert.equal(local.claimSettings.monitorServerUrl, "https://tracking.cheaply.fr");
+  assert.equal(local.claimSettings.monitorAccessToken, "");
   assert.ok(alarms.has("carrierReturnMonitorAlerts"));
 });
 
