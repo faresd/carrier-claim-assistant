@@ -1,7 +1,7 @@
 (function initReturnDashboard() {
   "use strict";
 
-  const state = { orders: [], view: "all", query: "", accountId: "", token: sessionStorage.getItem("carrierMonitorAdminToken") || "" };
+  const state = { orders: [], view: "all", query: "", accountId: "", csrfToken: "", user: null, authenticated: false };
   const body = document.getElementById("orders-body");
   const table = document.querySelector(".table-wrap");
   const loading = document.getElementById("loading");
@@ -50,11 +50,25 @@
   async function api(path, options = {}) {
     const response = await fetch(path, {
       ...options,
-      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json", ...(options.headers || {}) }
+      credentials: "same-origin",
+      headers: {
+        "content-type": "application/json",
+        ...(state.csrfToken ? { "x-csrf-token": state.csrfToken } : {}),
+        ...(options.headers || {})
+      }
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(payload.error || `Request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     return payload;
+  }
+
+  function startLogin() {
+    const returnTo = `${location.pathname}${location.search}${location.hash}`;
+    location.replace(`/api/auth/login?return_to=${encodeURIComponent(returnTo)}`);
   }
 
   function filteredOrders() {
@@ -127,7 +141,7 @@
   }
 
   async function load() {
-    if (!state.token) return;
+    if (!state.authenticated) return;
     loading.hidden = false;
     loading.textContent = "Loading tracked orders…";
     table.hidden = true;
@@ -145,6 +159,11 @@
       document.getElementById("auth-card").hidden = true;
       render();
     } catch (error) {
+      if (error.status === 401) {
+        state.authenticated = false;
+        startLogin();
+        return;
+      }
       loading.hidden = false;
       loading.textContent = error.message;
       document.getElementById("auth-card").hidden = false;
@@ -195,16 +214,6 @@
     }
   }
 
-  document.getElementById("auth-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    state.token = document.getElementById("admin-token").value.trim();
-    sessionStorage.setItem("carrierMonitorAdminToken", state.token);
-    load();
-  });
-  if (state.token) {
-    document.getElementById("admin-token").value = state.token;
-    load();
-  }
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("is-active", item === tab));
     state.view = tab.dataset.view;
@@ -214,7 +223,7 @@
   document.getElementById("account-filter").addEventListener("change", (event) => { state.accountId = event.target.value; render(); });
   document.getElementById("refresh").addEventListener("click", load);
   document.getElementById("add-browser").addEventListener("click", async (event) => {
-    if (!state.token) return notify("Connect the dashboard first.");
+    if (!state.authenticated) return notify("Sign in to the dashboard first.");
     event.currentTarget.disabled = true;
     try {
       const result = await api("/api/pairing", { method: "POST", body: JSON.stringify({ deviceName: "Chrome/Brave browser" }) });
@@ -288,5 +297,50 @@
     finally { button.disabled = false; }
   });
 
-  setInterval(() => { if (state.token) load(); }, 300000);
+  document.getElementById("sso-sign-in").addEventListener("click", startLogin);
+  document.getElementById("logout").addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await api("/api/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      location.replace("/?signed_out=1");
+    }
+  });
+
+  async function start() {
+    sessionStorage.removeItem("carrierMonitorAdminToken");
+    const params = new URLSearchParams(location.search);
+    const authCard = document.getElementById("auth-card");
+    const authMessage = document.getElementById("auth-message");
+    if (params.get("signed_out")) {
+      authMessage.textContent = "You are signed out. Use your Cheaply account when you are ready to reconnect.";
+      authCard.hidden = false;
+      loading.textContent = "Signed out.";
+      return;
+    }
+    if (params.get("auth_error")) {
+      authMessage.textContent = "The Cheaply sign-in did not complete or this account is not a tracking administrator.";
+      authCard.hidden = false;
+      loading.textContent = "Administrator sign-in required.";
+      return;
+    }
+    try {
+      const auth = await api("/api/auth/me");
+      state.csrfToken = auth.csrfToken;
+      state.user = auth.user;
+      state.authenticated = true;
+      document.getElementById("session-label").textContent = `Signed in · ${auth.user.name || auth.user.email}`;
+      document.getElementById("logout").hidden = false;
+      authCard.hidden = true;
+      await load();
+    } catch (error) {
+      if (error.status === 401) return startLogin();
+      authMessage.textContent = error.message;
+      authCard.hidden = false;
+      loading.textContent = error.message;
+    }
+  }
+
+  setInterval(() => { if (state.authenticated) load(); }, 300000);
+  start();
 })();

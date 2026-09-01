@@ -7,6 +7,7 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
 ## Architecture
 
 - **Cloudflare Worker**: authenticated order API, admin dashboard, browser pairing, and scheduled monitor.
+- **Cheaply SSO**: the dashboard uses the same `auth.cheaply.fr` PKCE authorization-code login as `presence.cheaply.fr`, with RS256/JWKS verification, a secure local session, and CSRF protection.
 - **Cloudflare Queue**: reliable, rate-limited carrier checks that scale beyond one Worker invocation and retry temporary carrier failures.
 - **[Cloudflare D1](https://developers.cloudflare.com/d1/)**: durable multi-account order history, current state, claim context, tracking events, devices, and resolutions.
 - **[La Poste Suivi v2](https://developer.laposte.fr/catalog-apis/suivi%402)**: official tracking source for tracked mail, Colissimo, and Chronopost. The API key is a Worker secret and never reaches the extension.
@@ -39,12 +40,15 @@ Classification is deterministic. AI is deliberately not required for alerts; an 
    - `CF_ACCOUNT_ID`
    - `CF_D1_DATABASE_ID`
    - `LAPOSTE_OKAPI_KEY`
-   - `MONITOR_ADMIN_TOKEN` — a long random admin secret
+   - `MONITOR_SESSION_SECRET` — a long random secret for the dashboard's secure local session
+   - `MONITOR_TRACKING_CLIENT_SECRET` — the `tracking-web` client secret shared only with `auth.cheaply.fr`
+   - `MONITOR_ADMIN_TOKEN` — an emergency API recovery token; it is not entered in the dashboard
    - `MONITOR_SYNC_TOKEN` — optional emergency/master extension token
-5. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
-6. Open the Worker URL and enter `MONITOR_ADMIN_TOKEN` to load the dashboard.
+5. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list with the exact callback `https://tracking.cheaply.fr/api/auth/callback`, and store the same client secret there as `TRACKING_CLIENT_SECRET`.
+6. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
+7. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
-Protecting the Worker hostname with Cloudflare Access is recommended for the admin dashboard. API calls remain protected by the admin, master sync, or per-device bearer token.
+Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. API recovery remains protected by the emergency admin token, while browser uploads use independently revocable per-device bearer tokens.
 
 ## Pair another Chrome/Brave installation
 

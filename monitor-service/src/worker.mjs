@@ -1,3 +1,5 @@
+import { dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./auth.mjs";
+
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
 const CLAIM_URLS = {
@@ -97,7 +99,7 @@ function corsHeaders(request) {
   return {
     "access-control-allow-origin": request.headers.get("origin") || "*",
     "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
-    "access-control-allow-headers": "authorization,content-type",
+    "access-control-allow-headers": "authorization,content-type,x-csrf-token",
     "access-control-max-age": "86400",
     vary: "Origin"
   };
@@ -546,7 +548,8 @@ async function claimPairingCode(request, env) {
 }
 
 async function api(request, env, url) {
-  const isAdmin = authorized(request, env.ADMIN_TOKEN);
+  const adminAuth = await dashboardAdminAuth(request, env);
+  const isAdmin = adminAuth.authorized;
   if (url.pathname === "/api/pairing/claim" && request.method === "POST") {
     try {
       return json({ ok: true, ...(await claimPairingCode(request, env)) }, 200, corsHeaders(request));
@@ -557,6 +560,9 @@ async function api(request, env, url) {
   const extensionAuth = await extensionAuthorized(request, env);
   const isExtension = extensionAuth.authorized;
   if (!isAdmin && !isExtension) return json({ error: "Unauthorized" }, 401, corsHeaders(request));
+  if (isAdmin && !isExtension && request.method !== "GET" && !(await validDashboardCsrf(request, adminAuth, env))) {
+    return json({ error: "Invalid or missing CSRF token" }, 403, corsHeaders(request));
+  }
 
   if (url.pathname === "/api/claim-launch/redeem" && request.method === "POST") {
     if (!isExtension) return json({ error: "Paired browser token required" }, 403, corsHeaders(request));
@@ -568,19 +574,19 @@ async function api(request, env, url) {
   }
 
   if (url.pathname === "/api/pairing" && request.method === "POST") {
-    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     return json({ ok: true, ...(await createPairingCode(request, env)) }, 200, corsHeaders(request));
   }
 
   if (url.pathname === "/api/devices" && request.method === "GET") {
-    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     const result = await env.DB.prepare(`SELECT id, name, created_at, last_seen_at, revoked_at
       FROM devices ORDER BY CASE WHEN revoked_at = '' THEN 0 ELSE 1 END, last_seen_at DESC`).all();
     return json({ devices: (result.results || []).map(rowToOrder) }, 200, corsHeaders(request));
   }
   const deviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/revoke$/);
   if (deviceMatch && request.method === "POST") {
-    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     const deviceId = decodeURIComponent(deviceMatch[1]);
     const now = new Date().toISOString();
     await env.DB.prepare("UPDATE devices SET revoked_at = ? WHERE id = ?").bind(now, deviceId).run();
@@ -609,7 +615,7 @@ async function api(request, env, url) {
   }
   const launchMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/launch-claim$/);
   if (launchMatch && request.method === "POST") {
-    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     try {
       return json({ ok: true, ...(await createClaimLaunch(request, env, decodeURIComponent(launchMatch[1]))) }, 200, corsHeaders(request));
     } catch (error) {
@@ -620,11 +626,11 @@ async function api(request, env, url) {
   if (actionMatch && request.method === "POST") {
     const recordId = decodeURIComponent(actionMatch[1]);
     const action = actionMatch[2];
-    if (action !== "ack-pickup" && !isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (action !== "ack-pickup" && !isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     return json({ ok: true, order: await mutateOrder(request, env, recordId, action, extensionAuth.deviceId || "admin") }, 200, corsHeaders(request));
   }
   if (url.pathname === "/api/monitor/run" && request.method === "POST") {
-    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     return json(await enqueueDailyMonitor(env), 200, corsHeaders(request));
   }
   return json({ error: "Not found" }, 404, corsHeaders(request));
@@ -635,6 +641,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
     if (url.pathname === "/api/health") return json({ ok: true, service: "carrier-return-monitor" }, 200, corsHeaders(request));
+    const authResponse = await handleDashboardAuth(request, env, url);
+    if (authResponse) return authResponse;
     if (url.pathname.startsWith("/api/")) return api(request, env, url);
     const asset = await env.ASSETS.fetch(request);
     return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers: secureAssetHeaders(asset.headers) });

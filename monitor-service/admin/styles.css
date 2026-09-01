@@ -23,7 +23,8 @@ h1 { margin: 6px 0 6px; font-size: 38px; line-height: 1.05; letter-spacing: -.03
 h2 { margin: 5px 0 0; font-size: 24px; }
 p { color: var(--muted); margin: 0; line-height: 1.5; }
 .topbar__actions { display: flex; align-items: center; gap: 10px; }
-.last-sync { margin-right: 6px; color: var(--muted); font-size: 12px; }
+.last-sync, .session-label { margin-right: 6px; color: var(--muted); font-size: 12px; }
+.session-label { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .button { border: 0; border-radius: 9px; padding: 11px 16px; background: var(--blue); color: white; font-weight: 760; box-shadow: 0 2px 4px rgba(8, 75, 145, .15); }
 .button:hover { background: var(--blue-dark); }
 .button:disabled { opacity: .55; cursor: wait; }
@@ -34,10 +35,7 @@ p { color: var(--muted); margin: 0; line-height: 1.5; }
 .auth-card { background: #eef5ff; border: 1px solid #cfe0f5; }
 .auth-card strong, .urgent-card strong { display: block; margin-bottom: 3px; }
 .auth-card p { font-size: 13px; }
-.auth-card form { display: flex; align-items: end; gap: 9px; }
-.auth-card label { display: grid; gap: 5px; color: #43536a; font-size: 11px; font-weight: 760; }
-.auth-card input, .search input { border: 1px solid #bfc9d6; border-radius: 8px; padding: 10px 12px; color: #142033; background: white; }
-.auth-card input { width: 280px; }
+.search input { border: 1px solid #bfc9d6; border-radius: 8px; padding: 10px 12px; color: #142033; background: white; }
 .urgent-card { background: var(--orange-soft); border: 1px solid #f2b68f; justify-content: flex-start; }
 .urgent-card__icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--orange); color: white; font-size: 22px; font-weight: 900; }
 .urgent-card div:nth-child(2) { flex: 1; }

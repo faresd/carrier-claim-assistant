@@ -15,22 +15,21 @@
           <p>Find returned parcels before their pickup window expires.</p>
         </div>
         <div class="topbar__actions">
+          <span id="session-label" class="session-label">Checking sign-in…</span>
           <span id="last-sync" class="last-sync">Not connected</span>
           <button id="add-browser" class="button button--secondary" type="button">Add browser</button>
           <button id="refresh" class="button button--secondary" type="button">Refresh</button>
           <button id="run-monitor" class="button" type="button">Run checks now</button>
+          <button id="logout" class="button button--secondary" type="button" hidden>Sign out</button>
         </div>
       </header>
 
-      <section id="auth-card" class="auth-card">
+      <section id="auth-card" class="auth-card" hidden>
         <div>
-          <strong>Connect this dashboard</strong>
-          <p>Enter the admin token configured as the Worker secret. It stays in this browser tab only.</p>
+          <strong>Cheaply administrator sign-in</strong>
+          <p id="auth-message">This dashboard uses the same secure account as presence.cheaply.fr.</p>
         </div>
-        <form id="auth-form">
-          <label>Admin token <input id="admin-token" type="password" autocomplete="off" required></label>
-          <button class="button" type="submit">Connect</button>
-        </form>
+        <button id="sso-sign-in" class="button" type="button">Sign in with Cheaply</button>
       </section>
 
       <section id="urgent-card" class="urgent-card" hidden>
@@ -63,7 +62,7 @@
           </div>
         </div>
 
-        <div id="loading" class="empty-state">Connect to load tracked orders.</div>
+        <div id="loading" class="empty-state">Checking administrator sign-in…</div>
         <div class="table-wrap" hidden>
           <table>
             <thead>

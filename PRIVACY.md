@@ -39,7 +39,7 @@ The extension has no analytics, advertising, or third-party tracking libraries. 
 
 ## Security and user control
 
-The extension uses Chrome Manifest V3 permissions for storage, scheduled checks, notifications, supported Amazon/carrier pages, and an operator-approved HTTPS monitor origin. Broad network access is optional and the browser asks before granting access to the exact configured server. Carrier API and cloud-administration secrets stay on the server. Per-browser tokens can be revoked independently. The extension does not collect account passwords or payment details. Final carrier submission requires explicit confirmation. Users can disable cloud sync, edit settings, recheck cached status, clear browser extension data, or uninstall the extension at any time.
+The extension uses Chrome Manifest V3 permissions for storage, scheduled checks, notifications, supported Amazon/carrier pages, and an operator-approved HTTPS monitor origin. Broad network access is optional and the browser asks before granting access to the exact configured server. Carrier API and cloud-administration secrets stay on the server. The monitor dashboard uses the operator's existing Cheaply SSO identity and a secure HttpOnly session; the extension never receives that dashboard session. Per-browser upload tokens can be revoked independently. The extension does not collect account passwords or payment details. Final carrier submission requires explicit confirmation. Users can disable cloud sync, edit settings, recheck cached status, clear browser extension data, or uninstall the extension at any time.
 
 ## Changes
 

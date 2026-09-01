@@ -91,6 +91,8 @@ GitHub Actions performs all release automation:
 
 The workflow installs no project dependencies. It uses Node's built-in test runner, raster generation, and `fetch`, standard ZIP tools available on GitHub's hosted runner, GitHub Actions, Google OAuth, and the official Chrome Web Store API. `npm run generate:assets` reproducibly builds the extension icons and privacy-safe store graphics from source code.
 
+The private monitor dashboard at `tracking.cheaply.fr` uses the existing `auth.cheaply.fr` PKCE/RS256 SSO flow shared with `presence.cheaply.fr`. No dashboard token is typed into or retained by browser storage; Chrome/Brave order uploads continue to use separate revocable device tokens.
+
 The initial Chrome Web Store item must be created once in the Developer Dashboard because the API only updates an existing item. Configure the GitHub `chrome-web-store` environment with these encrypted secrets:
 
 - `CWS_CLIENT_ID`
