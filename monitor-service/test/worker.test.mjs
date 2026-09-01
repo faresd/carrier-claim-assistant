@@ -131,7 +131,7 @@ test("allows API CORS only for the production dashboard and real extension origi
   assert.equal(untrustedResponse.headers.get("access-control-allow-origin"), null);
 });
 
-test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolves, and revokes access", async (context) => {
+test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup alerts, resolves, and revokes access", async (context) => {
   const { database, db } = await monitorDatabase();
   context.after(() => database.close());
   const sessionSecret = "test-session-secret-with-at-least-thirty-two-characters";
@@ -167,6 +167,16 @@ test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolv
   const pairing = await pairingResponse.json();
   assert.match(pairing.token, /^[A-Za-z0-9]{64}$/);
   assert.equal(pairing.deviceName, "Work Brave");
+
+  await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .bind("654322", "Packing desk two", new Date().toISOString(), expiresAt).run();
+  const secondPairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
+    body: { code: "654322", deviceName: "Warehouse Chrome" }
+  }), env);
+  assert.equal(secondPairingResponse.status, 200);
+  const secondPairing = await secondPairingResponse.json();
+  assert.match(secondPairing.token, /^[A-Za-z0-9]{64}$/);
+  assert.notEqual(secondPairing.deviceId, pairing.deviceId);
 
   const common = {
     marketplaceId: "A13V1IB3VIYZZH",
@@ -219,6 +229,14 @@ test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolv
   assert.equal(acknowledgement.status, 200);
   const acknowledgedAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
   assert.deepEqual((await acknowledgedAlerts.json()).orders, []);
+
+  const secondDeviceAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: secondPairing.token }), env);
+  assert.equal((await secondDeviceAlerts.json()).orders.length, 1);
+
+  await db.prepare("UPDATE notification_receipts SET last_notified_at = ? WHERE record_id = ? AND device_id = ?")
+    .bind(new Date(Date.now() - 21 * 3600000).toISOString(), pickup.recordId, pairing.deviceId).run();
+  const nextDayAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
+  assert.equal((await nextDayAlerts.json()).orders.length, 1);
 
   const resolvedResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/resolve`, {
     cookie: adminCookie,
