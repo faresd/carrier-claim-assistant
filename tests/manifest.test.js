@@ -71,6 +71,12 @@ test("all manifest script and stylesheet paths exist", () => {
   }
 });
 
+test("builds a reproducible store archive", () => {
+  const packageScript = fs.readFileSync(path.join(root, "scripts", "package-extension.sh"), "utf8");
+  assert.match(packageScript, /touch -t 198001010000/);
+  assert.match(packageScript, /sort \| zip -X/);
+});
+
 test("ships portable extension icons and no personal sender defaults", () => {
   assert.deepEqual(manifest.icons, {
     16: "icons/icon16.png",
