@@ -145,6 +145,7 @@
           ${["returning", "pickup_ready"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Confirm received</button>` : ""}
           ${["lost", "damaged"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Mark resolved</button>` : ""}
           ${order.trackingState === "resolved" ? `<button type="button" data-reopen="${escapeHtml(order.recordId)}">Reopen</button>` : ""}
+          ${order.trackingState === "resolved" ? `<button class="delete" type="button" data-delete="${escapeHtml(order.recordId)}">Delete record</button>` : ""}
         </div></td>
       </tr>`;
     }).join("");
@@ -265,6 +266,32 @@
   document.getElementById("search").addEventListener("input", (event) => { state.query = event.target.value; render(); });
   document.getElementById("account-filter").addEventListener("change", (event) => { state.accountId = event.target.value; render(); });
   document.getElementById("refresh").addEventListener("click", load);
+  document.getElementById("export-history").addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      const result = { version: 1, exportedAt: new Date().toISOString() };
+      for (const resource of ["orders", "trackingEvents", "sellerAccounts", "monitorRuns"]) {
+        const rows = [];
+        let offset = 0;
+        let page;
+        do {
+          page = await api(`/api/export?resource=${encodeURIComponent(resource)}&limit=500&offset=${offset}`);
+          rows.push(...(page.rows || []));
+          offset += (page.rows || []).length;
+          if (offset >= 100000 && page.hasMore) throw new Error(`The ${resource} export exceeds the safe browser limit.`);
+        } while (page.hasMore);
+        result[resource] = rows;
+      }
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `carrier-return-history-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      notify(`Exported ${result.orders.length} tracked orders.`);
+    } catch (error) { notify(error.message); }
+    finally { event.currentTarget.disabled = false; }
+  });
   document.getElementById("add-browser").addEventListener("click", async (event) => {
     if (!state.authenticated) return notify("Sign in to the dashboard first.");
     event.currentTarget.disabled = true;
@@ -300,7 +327,7 @@
   body.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    const recordId = button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.launchClaim;
+    const recordId = button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.launchClaim || button.dataset.delete;
     const order = state.orders.find((item) => item.recordId === recordId);
     if (!order) return;
     if (button.dataset.detail) return showDetails(order);
@@ -316,6 +343,11 @@
       if (button.dataset.reopen) {
         await api(`/api/orders/${encodeURIComponent(recordId)}/reopen`, { method: "POST", body: "{}" });
         notify("Order reopened.");
+      }
+      if (button.dataset.delete) {
+        if (!confirm(`Permanently delete resolved order ${order.orderId} and its tracking history? Export history first if you need a backup. This cannot be undone.`)) return;
+        await api(`/api/orders/${encodeURIComponent(recordId)}/delete`, { method: "POST", body: "{}" });
+        notify("Resolved order permanently deleted.");
       }
       await load();
     } catch (error) { notify(error.message); }

@@ -69,3 +69,7 @@ The claim endpoint also requires Chrome/Brave's immutable `chrome-extension://` 
 Active six-digit codes are never stored as readable values in D1. The Worker stores a domain-separated HMAC keyed by the dashboard session secret, so a database-only disclosure does not reveal a currently active code or permit an offline six-digit lookup.
 
 After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally.
+
+## Export and deletion
+
+An authenticated administrator can download a JSON backup containing orders, complete claim packages, tracking events, seller-account labels, and monitor-run history. Device credentials and their hashes are deliberately excluded. The dashboard exposes permanent deletion only for a resolved order and requires a separate confirmation; active lost, returning, and pickup-required cases cannot be deleted through that route. Related tracking events, notification receipts, launch tokens, and completed job rows are removed with the resolved record.

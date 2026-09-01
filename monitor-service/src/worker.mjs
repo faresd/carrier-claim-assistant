@@ -387,6 +387,46 @@ async function listOrders(db, url, deviceId = "master") {
   return (result.results || []).map(rowToOrder);
 }
 
+async function exportHistoryPage(db, url) {
+  const resources = {
+    orders: ["orders", "updated_at DESC"],
+    trackingEvents: ["tracking_events", "observed_at DESC"],
+    sellerAccounts: ["seller_accounts", "updated_at DESC"],
+    monitorRuns: ["monitor_runs", "run_date DESC"]
+  };
+  const resource = clean(url.searchParams.get("resource"), 40);
+  const definition = resources[resource];
+  if (!definition) throw new Error("Choose a valid export resource.");
+  const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 500)));
+  const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get("offset") || 0)));
+  const result = await db.prepare(`SELECT * FROM ${definition[0]} ORDER BY ${definition[1]} LIMIT ? OFFSET ?`)
+    .bind(limit, offset).all();
+  const rows = (result.results || []).map((row) => {
+    const normalized = rowToOrder(row);
+    if (resource === "orders") normalized.claimPayload = parsedJsonObject(normalized.claimPayload);
+    return normalized;
+  });
+  return { resource, rows, hasMore: rows.length === limit };
+}
+
+async function deleteResolvedOrder(env, recordId) {
+  const row = await env.DB.prepare("SELECT record_id, account_id, marketplace_id, tracking_state FROM orders WHERE record_id = ?")
+    .bind(recordId).first();
+  if (!row) throw new Error("Tracked order not found.");
+  if (row.tracking_state !== "resolved") throw new Error("Only a resolved order can be permanently deleted.");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM notification_receipts WHERE record_id = ?").bind(recordId),
+    env.DB.prepare("DELETE FROM claim_launches WHERE record_id = ?").bind(recordId),
+    env.DB.prepare("DELETE FROM tracking_events WHERE record_id = ?").bind(recordId),
+    env.DB.prepare("DELETE FROM monitor_jobs WHERE record_id = ?").bind(recordId),
+    env.DB.prepare("DELETE FROM orders WHERE record_id = ? AND tracking_state = 'resolved'").bind(recordId),
+    env.DB.prepare(`DELETE FROM seller_accounts WHERE account_id = ? AND marketplace_id = ?
+      AND NOT EXISTS (SELECT 1 FROM orders WHERE account_id = ? AND marketplace_id = ?)`)
+      .bind(row.account_id, row.marketplace_id, row.account_id, row.marketplace_id)
+  ]);
+  return { recordId };
+}
+
 function eventList(payload) {
   const shipment = payload?.shipment || payload?.data?.shipment || payload?.data || payload || {};
   const candidates = [shipment.event, shipment.events, payload?.events, payload?.event]
@@ -746,6 +786,14 @@ async function api(request, env, url) {
       return json({ error: error.message }, 400, corsHeaders(request));
     }
   }
+  if (url.pathname === "/api/export" && request.method === "GET") {
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
+    try {
+      return json({ ok: true, ...(await exportHistoryPage(env.DB, url)), exportedAt: new Date().toISOString() }, 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, 400, corsHeaders(request));
+    }
+  }
   const eventsMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/events$/);
   if (eventsMatch && request.method === "GET") {
     const recordId = decodeURIComponent(eventsMatch[1]);
@@ -759,6 +807,15 @@ async function api(request, env, url) {
     if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
     try {
       return json({ ok: true, ...(await createClaimLaunch(request, env, decodeURIComponent(launchMatch[1]))) }, 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, 400, corsHeaders(request));
+    }
+  }
+  const deleteMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/delete$/);
+  if (deleteMatch && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
+    try {
+      return json({ ok: true, ...(await deleteResolvedOrder(env, decodeURIComponent(deleteMatch[1]))) }, 200, corsHeaders(request));
     } catch (error) {
       return json({ error: error.message }, 400, corsHeaders(request));
     }

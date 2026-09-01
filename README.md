@@ -35,6 +35,8 @@ The production dashboard and API use `https://tracking.cheaply.fr`. New installa
 
 The dashboard contains All, Lost, Returned, and Resolved histories, an Amazon-account filter, tracking details, a claim-ready package, a **Start La Poste/Chronopost claim** action, and explicit **Confirm received** resolution. The claim package preserves the shipment, item/SKU/ASIN/value/quantity, recipient, sender contact/address, detected reason, editable message, status history, account, and claim reference. The dashboard creates a single-use ten-minute launch link; the paired extension redeems it on the official carrier page and still pauses for operator confirmation before final submission. Installations on other computers or browser profiles connect with a one-time six-digit code and receive separate revocable device tokens. See [`monitor-service/README.md`](monitor-service/README.md).
 
+Administrators can export the private order and tracking history as a JSON backup. Resolved records can be permanently deleted with explicit confirmation; active pickup, return, and investigation cases are protected from deletion.
+
 When a dashboard-started claim succeeds, the paired browser briefly opens the saved Amazon order in one inactive tab, appends the claim reference to Seller Notes, and closes the tab. The write is bounded and best-effort; if Amazon is signed out or the notes control is temporarily unavailable, the saved claim outcome is applied automatically the next time that order page is opened.
 
 ## Workflow
