@@ -6,6 +6,7 @@ import monitorWorker, {
   allowedApiOrigin,
   classifyTrackingState,
   enqueueDailyMonitor,
+  fetchOfficialTracking,
   monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
@@ -94,6 +95,17 @@ test("normalizes a delivered latest event even when older history records a retu
   ] } });
   assert.equal(result.trackingState, "delivered");
   assert.match(result.statusText, /livr/i);
+});
+
+test("turns a carrier abort into a bounded retryable error", async () => {
+  await assert.rejects(
+    () => fetchOfficialTracking("8N00000000000", { LAPOSTE_OKAPI_KEY: "test" }, async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    }, 1000),
+    /timed out after 1 second/i
+  );
 });
 
 test("runs only during the seven o'clock Paris hour", () => {

@@ -471,12 +471,24 @@ export function normalizeCarrierPayload(payload) {
   };
 }
 
-export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch) {
+export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch, timeoutMs = 15000) {
   if (!env.LAPOSTE_OKAPI_KEY) throw new Error("LAPOSTE_OKAPI_KEY is not configured.");
   const endpoint = `https://api.laposte.fr/suivi/v2/idships/${encodeURIComponent(trackingNumber)}?lang=fr_FR`;
-  const response = await fetchImpl(endpoint, {
-    headers: { accept: "application/json", "X-Okapi-Key": env.LAPOSTE_OKAPI_KEY }
-  });
+  const controller = new AbortController();
+  const requestTimeout = Math.max(1000, Number(timeoutMs) || 15000);
+  const timer = setTimeout(() => controller.abort(), requestTimeout);
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      headers: { accept: "application/json", "X-Okapi-Key": env.LAPOSTE_OKAPI_KEY },
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`La Poste Suivi request timed out after ${Math.round(requestTimeout / 1000)} seconds.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) throw new Error(`La Poste Suivi returned HTTP ${response.status}.`);
   const payload = await response.json();
   if (payload?.returnCode && Number(payload.returnCode) !== 200) throw new Error(clean(payload.returnMessage || `Carrier error ${payload.returnCode}`, 300));
