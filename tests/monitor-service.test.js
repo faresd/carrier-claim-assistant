@@ -19,6 +19,7 @@ const dashboardStyles = read("monitor-service", "admin", "styles.css");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
 const ssoPreflight = read("monitor-service", "scripts", "verify-sso-registration.mjs");
+const lapostePreflight = read("monitor-service", "scripts", "verify-laposte-access.mjs");
 const productionSmoke = read("monitor-service", "scripts", "smoke-production.mjs");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
@@ -136,8 +137,9 @@ test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", 
 test("monitor deployment fails before mutation when required production configuration is missing", () => {
   const validationIndex = deployment.indexOf("Validate deployment configuration");
   const ssoIndex = deployment.indexOf("Verify shared SSO client registration");
+  const laposteIndex = deployment.indexOf("Verify La Poste Suivi v2 access");
   const migrationIndex = deployment.indexOf("Apply database migrations");
-  assert.ok(validationIndex > 0 && validationIndex < ssoIndex && ssoIndex < migrationIndex);
+  assert.ok(validationIndex > 0 && validationIndex < ssoIndex && ssoIndex < laposteIndex && laposteIndex < migrationIndex);
   for (const name of ["CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN", "LAPOSTE_OKAPI_KEY", "MONITOR_SESSION_SECRET", "MONITOR_TRACKING_CLIENT_SECRET"]) {
     assert.match(deployment, new RegExp(name));
     assert.match(deploymentValidator, new RegExp(name));
@@ -150,6 +152,10 @@ test("monitor deployment fails before mutation when required production configur
   assert.match(ssoPreflight, /code_challenge_method/);
   assert.match(ssoPreflight, /S256/);
   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
+  assert.match(deployment, /node monitor-service\/scripts\/verify-laposte-access\.mjs/);
+  assert.match(lapostePreflight, /api\.laposte\.fr\/suivi\/v2\/idships/);
+  assert.match(lapostePreflight, /X-Okapi-Key/);
+  assert.match(lapostePreflight, /\[401, 403\]/);
 });
 
 test("monitor deployment verifies the live security and authentication boundary", () => {
