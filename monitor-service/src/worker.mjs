@@ -9,7 +9,7 @@ const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const REQUIRED_SCHEMA_TABLES = [
   "orders", "seller_accounts", "tracking_events", "monitor_runs", "monitor_jobs",
-  "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts"
+  "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts", "deleted_orders"
 ];
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
@@ -248,6 +248,17 @@ export async function upsertOrder(db, input) {
     throw new Error("A valid Amazon order ID and tracking number are required.");
   }
   const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+  const tombstone = fallbackAccounts.has(order.accountId)
+    ? await db.prepare("SELECT record_id FROM deleted_orders WHERE order_id = ? AND marketplace_id = ? LIMIT 1")
+      .bind(order.orderId, order.marketplaceId).first()
+    : await db.prepare(`SELECT record_id FROM deleted_orders
+      WHERE marketplace_id = ? AND order_id = ? AND (account_id = ? OR account_id IN ('default', 'sellercentral.amazon.fr')) LIMIT 1`)
+      .bind(order.marketplaceId, order.orderId, order.accountId).first();
+  if (tombstone) {
+    const error = new Error("This resolved order was permanently deleted from the return monitor.");
+    error.status = 410;
+    throw error;
+  }
   let migratedFallbackAccount = "";
   const existingAccountOrder = await db.prepare(`SELECT record_id, account_id FROM orders
     WHERE order_id = ? AND marketplace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 1`)
@@ -410,11 +421,15 @@ async function exportHistoryPage(db, url) {
 }
 
 async function deleteResolvedOrder(env, recordId) {
-  const row = await env.DB.prepare("SELECT record_id, account_id, marketplace_id, tracking_state FROM orders WHERE record_id = ?")
+  const row = await env.DB.prepare("SELECT record_id, account_id, marketplace_id, order_id, tracking_state FROM orders WHERE record_id = ?")
     .bind(recordId).first();
   if (!row) throw new Error("Tracked order not found.");
   if (row.tracking_state !== "resolved") throw new Error("Only a resolved order can be permanently deleted.");
   await env.DB.batch([
+    env.DB.prepare(`INSERT INTO deleted_orders (account_id, marketplace_id, order_id, record_id, deleted_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, marketplace_id, order_id) DO UPDATE SET
+      record_id = excluded.record_id, deleted_at = excluded.deleted_at`)
+      .bind(row.account_id, row.marketplace_id, row.order_id, row.record_id, new Date().toISOString()),
     env.DB.prepare("DELETE FROM notification_receipts WHERE record_id = ?").bind(recordId),
     env.DB.prepare("DELETE FROM claim_launches WHERE record_id = ?").bind(recordId),
     env.DB.prepare("DELETE FROM tracking_events WHERE record_id = ?").bind(recordId),
@@ -783,7 +798,7 @@ async function api(request, env, url) {
       const order = await upsertOrder(env.DB, await request.json());
       return json({ ok: true, order }, 200, corsHeaders(request));
     } catch (error) {
-      return json({ error: error.message }, 400, corsHeaders(request));
+      return json({ error: error.message, ...(error.status === 410 ? { deleted: true } : {}) }, error.status || 400, corsHeaders(request));
     }
   }
   if (url.pathname === "/api/export" && request.method === "GET") {

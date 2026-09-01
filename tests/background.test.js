@@ -224,6 +224,109 @@ test("pairing immediately backfills cached orders and marks them synchronized", 
   }
 });
 
+test("a server-deleted order is suppressed locally and never uploaded again", async () => {
+  const originalFetch = global.fetch;
+  const previousSettings = local.claimSettings;
+  const previousRecords = local.trackedOrdersByOrder;
+  const requests = [];
+  local.trackedOrdersByOrder = {};
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://tracking.cheaply.fr",
+    monitorAccessToken: "paired-device-token",
+    pickupNotifications: false
+  };
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    return new Response(JSON.stringify({
+      error: "This resolved order was permanently deleted from the return monitor.",
+      deleted: true
+    }), {
+      status: 410,
+      headers: { "content-type": "application/json" }
+    });
+  };
+
+  try {
+    const response = await send({
+      type: "REGISTER_TRACKED_ORDER",
+      order: {
+        orderId: "777-8888888-9999999",
+        trackingNumber: "CC000000077FR",
+        carrier: "Colissimo",
+        sellerAccountId: "merchant-deleted",
+        marketplaceId: "A13V1IB3VIYZZH"
+      },
+      result: { statusText: "Retour à l'expéditeur", checkedAt: "2026-09-01T07:00:00.000Z" }
+    });
+    assert.equal(response.ok, true);
+    assert.match(response.record.cloudDeletedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(response.record.cloudSyncError, "");
+    assert.equal(requests.length, 1);
+
+    listeners.alarm({ name: "carrierReturnMonitorAlerts" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(requests.length, 1);
+  } finally {
+    global.fetch = originalFetch;
+    local.claimSettings = previousSettings;
+    local.trackedOrdersByOrder = previousRecords;
+  }
+});
+
+test("discovering a concrete seller account asks the server to decide an ambiguous deletion", async () => {
+  const originalFetch = global.fetch;
+  const previousSettings = local.claimSettings;
+  const previousRecords = local.trackedOrdersByOrder;
+  const orderId = "666-7777777-8888888";
+  const requests = [];
+  local.trackedOrdersByOrder = {
+    [`sellercentral.amazon.fr|A13V1IB3VIYZZH|${orderId}`]: {
+      recordId: `sellercentral.amazon.fr|A13V1IB3VIYZZH|${orderId}`,
+      orderId,
+      trackingNumber: "CC000000066FR",
+      sellerAccountId: "sellercentral.amazon.fr",
+      marketplaceId: "A13V1IB3VIYZZH",
+      cloudDeletedAt: "2026-09-01T06:00:00.000Z"
+    }
+  };
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://tracking.cheaply.fr",
+    monitorAccessToken: "paired-device-token"
+  };
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    return Response.json({ ok: true });
+  };
+
+  try {
+    const response = await send({
+      type: "REGISTER_TRACKED_ORDER",
+      order: {
+        orderId,
+        trackingNumber: "CC000000066FR",
+        carrier: "Colissimo",
+        sellerAccountId: "merchant-discovered",
+        marketplaceId: "A13V1IB3VIYZZH"
+      },
+      result: { statusText: "En transit", checkedAt: "2026-09-01T08:00:00.000Z" }
+    });
+    assert.equal(response.ok, true);
+    assert.equal(requests.length, 1);
+    assert.equal(response.record.sellerAccountId, "merchant-discovered");
+    assert.equal(response.record.cloudDeletedAt, "");
+    assert.match(response.record.cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(local.trackedOrdersByOrder[`sellercentral.amazon.fr|A13V1IB3VIYZZH|${orderId}`], undefined);
+  } finally {
+    global.fetch = originalFetch;
+    local.claimSettings = previousSettings;
+    local.trackedOrdersByOrder = previousRecords;
+  }
+});
+
 test("a revoked device token disables cloud sync without deleting local history", async () => {
   const originalFetch = global.fetch;
   local.claimSettings = {

@@ -140,6 +140,11 @@ async function monitorRequest(path, options = {}, overrides = null) {
       });
       throw new Error("This browser's return-monitor access was revoked. Pair it again in Settings.");
     }
+    if (response.status === 410 && payload.deleted === true) {
+      const error = new Error(payload.error || "This resolved order was permanently deleted from the return monitor.");
+      error.permanentlyDeleted = true;
+      throw error;
+    }
     if (!response.ok) throw new Error(payload.error || `Monitor server returned HTTP ${response.status}.`);
     return payload;
   } finally {
@@ -225,23 +230,31 @@ async function saveTrackingRecord(order, result = {}, recommendation = null, out
   const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
   const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
   const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
+  const previousIdentity = trackingRecords.identity(previous || {});
+  const orderIdentity = trackingRecords.identity(order);
+  const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+  const accountWasDisambiguated = previous && fallbackAccounts.has(previousIdentity.sellerAccountId)
+    && !fallbackAccounts.has(orderIdentity.sellerAccountId);
   const record = {
     ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
     cloudSyncedAt: "",
-    cloudSyncError: ""
+    cloudSyncError: "",
+    cloudDeletedAt: accountWasDisambiguated ? "" : previous?.cloudDeletedAt || ""
   };
   record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
   if (previousEntry?.key && previousEntry.key !== record.recordId) delete records[previousEntry.key];
   records[record.recordId] = record;
   await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
   const config = normalizedMonitorConfig(settings);
-  if (config.enabled) {
+  if (config.enabled && !record.cloudDeletedAt) {
     const attemptedAt = new Date().toISOString();
     await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).then(async () => {
       records[record.recordId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
       await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
     }).catch(async (error) => {
-      records[record.recordId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
+      records[record.recordId] = error.permanentlyDeleted
+        ? { ...record, cloudSyncedAt: attemptedAt, cloudDeletedAt: attemptedAt, cloudSyncError: "", cloudSyncAttemptedAt: attemptedAt }
+        : { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
       await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
     });
   }
@@ -254,10 +267,11 @@ async function syncPendingTrackingRecords({ limit = 50 } = {}) {
   const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
   const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
   const pending = Object.values(records).filter((record) =>
-    record?.orderId && record?.trackingNumber && (!record.cloudSyncedAt || record.cloudSyncError)
+    record?.orderId && record?.trackingNumber && !record.cloudDeletedAt && (!record.cloudSyncedAt || record.cloudSyncError)
   );
   let uploaded = 0;
   let failed = 0;
+  let suppressed = 0;
   for (const record of pending.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)))) {
     const key = trackingRecords.recordKey(record);
     if (!key) continue;
@@ -277,12 +291,23 @@ async function syncPendingTrackingRecords({ limit = 50 } = {}) {
         cloudSyncAttemptedAt: attemptedAt,
         cloudSyncError: error.message
       };
+      if (error.permanentlyDeleted) {
+        records[key] = {
+          ...records[key],
+          cloudSyncedAt: attemptedAt,
+          cloudDeletedAt: attemptedAt,
+          cloudSyncAttemptedAt: attemptedAt,
+          cloudSyncError: ""
+        };
+        suppressed += 1;
+        continue;
+      }
       failed += 1;
       if (/revoked|not configured/i.test(error.message)) break;
     }
   }
   await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-  return { ok: failed === 0, uploaded, failed, remaining: Math.max(0, pending.length - uploaded) };
+  return { ok: failed === 0, uploaded, failed, suppressed, remaining: Math.max(0, pending.length - uploaded - suppressed) };
 }
 
 async function mergeRemoteTrackingRecords(remoteOrders = []) {

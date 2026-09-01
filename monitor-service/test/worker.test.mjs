@@ -43,6 +43,7 @@ async function monitorDatabase() {
   const database = new DatabaseSync(":memory:");
   database.exec(await readFile(new URL("../migrations/0001_initial.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0002_resolved_deletion_indexes.sql", import.meta.url), "utf8"));
+  database.exec(await readFile(new URL("../migrations/0003_deleted_order_tombstones.sql", import.meta.url), "utf8"));
   return { database, db: new D1SqliteAdapter(database) };
 }
 
@@ -161,6 +162,24 @@ test("health fails closed until every production binding and schema table is rea
   const incompleteSchema = await monitorHealth(env, request);
   assert.equal(incompleteSchema.status, 503);
   assert.deepEqual(await incompleteSchema.json(), { ok: false, service: "carrier-return-monitor", ready: false });
+});
+
+test("a deleted fallback-account order stays deleted after its seller account is discovered", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  await db.prepare(`INSERT INTO deleted_orders (account_id, marketplace_id, order_id, record_id, deleted_at)
+    VALUES (?, ?, ?, ?, ?)`)
+    .bind("default", "A13V1IB3VIYZZH", "111-2222222-3333333", "default|A13V1IB3VIYZZH|111-2222222-3333333", new Date().toISOString()).run();
+
+  await assert.rejects(
+    upsertOrder(db, {
+      orderId: "111-2222222-3333333",
+      trackingNumber: "CC000000002FR",
+      sellerAccountId: "merchant-discovered",
+      marketplaceId: "A13V1IB3VIYZZH"
+    }),
+    (error) => error.status === 410 && /permanently deleted/i.test(error.message)
+  );
 });
 
 test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup alerts, resolves, and revokes access", async (context) => {
@@ -411,6 +430,34 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
   assert.equal(deletion.status, 200);
   assert.equal((await deletion.json()).recordId, pickup.recordId);
   assert.equal(await db.prepare("SELECT record_id FROM orders WHERE record_id = ?").bind(pickup.recordId).first(), null);
+  const tombstone = await db.prepare("SELECT * FROM deleted_orders WHERE record_id = ?").bind(pickup.recordId).first();
+  assert.deepEqual(Object.keys(tombstone).sort(), ["account_id", "deleted_at", "marketplace_id", "order_id", "record_id"]);
+  assert.equal(tombstone.account_id, firstOrder.sellerAccountId);
+  assert.equal(tombstone.marketplace_id, firstOrder.marketplaceId);
+  assert.equal(tombstone.order_id, firstOrder.orderId);
+  assert.equal("tracking_number" in tombstone, false);
+
+  const staleBrowserUpload = await monitorWorker.fetch(jsonRequest("/api/orders", {
+    token: pairing.token,
+    body: { ...firstOrder, trackingState: "returning" }
+  }), env);
+  assert.equal(staleBrowserUpload.status, 410);
+  assert.equal((await staleBrowserUpload.json()).deleted, true);
+  assert.equal(await db.prepare("SELECT record_id FROM orders WHERE record_id = ?").bind(pickup.recordId).first(), null);
+
+  const ambiguousCachedUpload = await monitorWorker.fetch(jsonRequest("/api/orders", {
+    token: pairing.token,
+    body: { ...firstOrder, sellerAccountId: "default", trackingState: "returning" }
+  }), env);
+  assert.equal(ambiguousCachedUpload.status, 410);
+  assert.equal((await ambiguousCachedUpload.json()).deleted, true);
+
+  const otherAccountSameOrder = await monitorWorker.fetch(jsonRequest("/api/orders", {
+    token: secondPairing.token,
+    body: { ...firstOrder, sellerAccountId: "merchant-fr-three", trackingNumber: "8U02230079999" }
+  }), env);
+  assert.equal(otherAccountSameOrder.status, 200);
+  assert.equal((await otherAccountSameOrder.json()).order.accountId, "merchant-fr-three");
 
   const revokeResponse = await monitorWorker.fetch(jsonRequest(`/api/devices/${encodeURIComponent(pairing.deviceId)}/revoke`, {
     cookie: adminCookie,

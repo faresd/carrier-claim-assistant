@@ -51,7 +51,7 @@ Only an authenticated dashboard administrator can mark an order resolved or reop
 
 The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. After deployment, it automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
 
-The health response is ready only after the Worker can see every required secret and binding and all ten D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
+The health response is ready only after the Worker can see every required secret and binding and all eleven D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
 
 Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. Browser uploads use independently revocable per-device bearer tokens; no global master upload token or dashboard bearer token is provisioned by CI.
 
@@ -72,4 +72,4 @@ After pairing, the extension immediately backfills up to 50 cached orders and co
 
 ## Export and deletion
 
-An authenticated administrator can download a JSON backup containing orders, complete claim packages, tracking events, seller-account labels, and monitor-run history. Device credentials and their hashes are deliberately excluded. The dashboard exposes permanent deletion only for a resolved order and requires a separate confirmation; active lost, returning, and pickup-required cases cannot be deleted through that route. Related tracking events, notification receipts, launch tokens, and completed job rows are removed with the resolved record.
+An authenticated administrator can download a JSON backup containing orders, complete claim packages, tracking events, seller-account labels, and monitor-run history. Device credentials and their hashes are deliberately excluded. The dashboard exposes permanent deletion only for a resolved order and requires a separate confirmation; active lost, returning, and pickup-required cases cannot be deleted through that route. Related tracking events, notification receipts, launch tokens, and completed job rows are removed with the resolved record. A minimal marker containing only the seller-account, marketplace, and Amazon-order identifiers, internal record identifier, and deletion time remains so a stale paired browser cannot recreate the deleted record; it contains no tracking, recipient, address, item, status, claim, or carrier-event data.
