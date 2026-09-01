@@ -170,6 +170,8 @@ test("wires the bounded Manage Orders audit dashboard", () => {
   assert.match(ordersListScript, /START_ORDER_AUDIT/);
   assert.match(ordersListScript, /RELEASE_ORDER_AUDIT_WORKER/);
   assert.match(ordersListScript, /Last checked:/);
+  assert.match(ordersListScript, /observedLocation: `\$\{location\.pathname\}\$\{location\.search\}`/);
+  assert.match(ordersListScript, /visibleOrderIds\.has\(orderId\)/);
   assert.match(auditorScript, /ORDER_AUDIT_DETAILS/);
   assert.match(assistantCss, /\.lpca-order-badge/);
   assert.match(assistantCss, /\.lpca-order-status-time/);

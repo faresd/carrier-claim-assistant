@@ -23,7 +23,7 @@
     workerReleasePending: false,
     remoteLookupQueued: new Set(),
     remoteLookupTimer: null,
-    observedPath: location.pathname
+    observedLocation: `${location.pathname}${location.search}`
   };
 
   function eligibility() {
@@ -226,13 +226,15 @@
 
   function discoverRows() {
     ensureToolbar();
-    if (location.pathname !== state.observedPath) {
-      state.observedPath = location.pathname;
+    const currentLocation = `${location.pathname}${location.search}`;
+    if (currentLocation !== state.observedLocation) {
+      state.observedLocation = currentLocation;
       state.rows.clear();
       state.queue = [];
       state.queued.clear();
     }
     const discoveredOrderIds = [];
+    const visibleOrderIds = new Set();
     const links = [...document.querySelectorAll('a[href*="/orders-v3/order/"]')];
     const pageContext = sellerContextFromUrl(location.href);
     for (const link of links) {
@@ -240,6 +242,7 @@
       if (!orderId || link.textContent.trim() !== orderId) continue;
       const row = link.closest("tr");
       if (!row) continue;
+      visibleOrderIds.add(orderId);
       if (!state.rows.has(orderId)) discoveredOrderIds.push(orderId);
       const linkContext = sellerContextFromUrl(link.href);
       const previous = state.rows.get(orderId) || {};
@@ -252,6 +255,13 @@
         marketplaceId: linkContext.marketplaceId || pageContext.marketplaceId || previous.marketplaceId || "A13V1IB3VIYZZH"
       });
       renderOrder(orderId);
+    }
+    for (const orderId of state.rows.keys()) {
+      if (!visibleOrderIds.has(orderId)) state.rows.delete(orderId);
+    }
+    state.queue = state.queue.filter((orderId) => visibleOrderIds.has(orderId));
+    for (const orderId of state.queued) {
+      if (!visibleOrderIds.has(orderId)) state.queued.delete(orderId);
     }
     if (state.initialized && discoveredOrderIds.length) scheduleRemoteLookup(discoveredOrderIds);
     updateToolbar();
