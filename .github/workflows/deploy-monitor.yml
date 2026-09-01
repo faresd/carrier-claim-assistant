@@ -2,6 +2,12 @@ name: Deploy return monitor
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_pending_laposte:
+        description: "Deploy infrastructure while La Poste Suivi v2 approval is pending"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -41,6 +47,7 @@ jobs:
       - name: Verify La Poste Suivi v2 access
         env:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
+          LAPOSTE_ALLOW_PENDING: ${{ inputs.allow_pending_laposte }}
         run: node monitor-service/scripts/verify-laposte-access.mjs
       - name: Configure D1 database binding
         env:
