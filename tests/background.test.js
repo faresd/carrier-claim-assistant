@@ -346,6 +346,67 @@ test("stores a successful claim, notifies Amazon, and clears the pending submiss
   assert.equal(sentMessages.at(-1).message.type, "CLAIM_SUBMISSION_SUCCESS");
 });
 
+test("uploads the successful claim reference and sent state to the return monitor", async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://tracking.cheaply.fr",
+    monitorAccessToken: "paired-device-token"
+  };
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const claim = {
+    id: "claim-cloud-success-1",
+    carrier: "chronopost",
+    reason: "delayed",
+    order: {
+      orderId: "305-6121206-6903513",
+      trackingNumber: "XY123456789FR",
+      sellerAccountId: "merchant-cloud",
+      sellerAccountName: "Cheaply France",
+      marketplaceId: "A13V1IB3VIYZZH"
+    },
+    executionMode: "automatic"
+  };
+  try {
+    await send({ type: "OPEN_CARRIER_CLAIM", claim }, { tab: { id: 57 } });
+    await send({
+      type: "UPDATE_PENDING_CLAIM",
+      carrier: "chronopost",
+      claim: { ...session.pendingChronopostClaim, submissionStartedAt: "2026-09-01T10:00:00.000Z" }
+    });
+    const response = await send({
+      type: "CLAIM_SUBMISSION_SUCCESS",
+      carrier: "chronopost",
+      claimId: claim.id,
+      reference: "CHR-2026-8472619",
+      confirmationText: "Votre demande a bien été transmise."
+    });
+
+    assert.equal(response.ok, true);
+    const upload = requests.find((request) => request.url === "https://tracking.cheaply.fr/api/orders");
+    assert.ok(upload);
+    assert.equal(upload.options.headers.authorization, "Bearer paired-device-token");
+    const record = JSON.parse(upload.options.body);
+    assert.equal(record.orderId, claim.order.orderId);
+    assert.equal(record.claimStatus, "sent");
+    assert.equal(record.claimReference, "CHR-2026-8472619");
+    assert.match(record.claimSubmittedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(local.trackedOrdersByOrder[claim.order.orderId].cloudSyncError, "");
+    assert.match(local.trackedOrdersByOrder[claim.order.orderId].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    global.fetch = originalFetch;
+    local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false, monitorAccessToken: "" };
+  }
+});
+
 test("recovers a referenced La Poste confirmation when the final carrier button was clicked directly", async () => {
   const claim = {
     id: "claim-recovery-1",
