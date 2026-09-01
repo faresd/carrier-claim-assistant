@@ -185,7 +185,8 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   const orderId = clean(input.orderId, 40);
   const accountId = clean(input.sellerAccountId || input.accountId || "default", 180);
   const marketplaceId = clean(input.marketplaceId || "A13V1IB3VIYZZH", 180);
-  const trackingState = clean(input.trackingState || "unknown", 30);
+  const requestedTrackingState = clean(input.trackingState || "unknown", 30);
+  const trackingState = requestedTrackingState === "resolved" ? "unknown" : requestedTrackingState;
   const claimReason = clean(input.claimReason || "none", 50);
   const claimStatus = clean(input.claimStatus || "none", 30);
   return {
@@ -220,8 +221,8 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     claimSubmittedAt: clean(input.claimSubmittedAt, 40),
     claimPayload: claimPayloadJson(input),
     pickupNotifiedAt: clean(input.pickupNotifiedAt, 40),
-    resolvedAt: clean(input.resolvedAt, 40),
-    resolutionNote: clean(input.resolutionNote, 500),
+    resolvedAt: "",
+    resolutionNote: "",
     firstSeenAt: clean(input.firstSeenAt || now, 40),
     updatedAt: now
   };

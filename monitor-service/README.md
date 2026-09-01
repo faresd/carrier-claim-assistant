@@ -30,6 +30,8 @@ The scheduled trigger runs every fifteen minutes, but the monitor creates one da
 
 Classification is deterministic. AI is deliberately not required for alerts; an optional future fallback may review only statuses left as `unknown`.
 
+Only an authenticated dashboard administrator can mark an order resolved or reopen it. Browser uploads may enrich tracking and claim data, but cannot create a resolved state or reinstate one after an administrator reopens the case.
+
 ## One-time deployment
 
 1. Create a Cloudflare D1 database named `carrier-return-monitor`.
