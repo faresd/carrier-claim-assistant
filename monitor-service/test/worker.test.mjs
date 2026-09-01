@@ -391,6 +391,59 @@ test("runs one idempotent morning queue through Suivi v2 and stores pickup and d
   assert.equal(queued.length, 2);
 });
 
+test("resumes only undispatched morning jobs after a queue interruption", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  let dispatchAttempts = 0;
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: {
+      async sendBatch(messages) {
+        dispatchAttempts += 1;
+        if (dispatchAttempts === 1) throw new Error("Temporary queue outage");
+        queued.push(...messages);
+      }
+    }
+  };
+  for (const [orderId, trackingNumber] of [
+    ["111-1111111-1111111", "CC000000001FR"],
+    ["222-2222222-2222222", "CC000000002FR"]
+  ]) {
+    await upsertOrder(db, {
+      orderId,
+      trackingNumber,
+      sellerAccountId: "merchant-resume",
+      marketplaceId: "A13V1IB3VIYZZH",
+      trackingState: "in_transit"
+    });
+  }
+
+  const runDate = new Date("2026-09-04T05:05:00.000Z");
+  await assert.rejects(() => enqueueDailyMonitor(env, runDate), /Temporary queue outage/);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM monitor_jobs WHERE status = 'queued'").get().count, 2);
+
+  const resumed = await enqueueDailyMonitor(env, new Date("2026-09-04T05:20:00.000Z"));
+  assert.deepEqual(resumed, { skipped: false, resumed: true, runDate: "2026-09-04", queuedCount: 2 });
+  assert.equal(queued.length, 2);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM monitor_jobs WHERE status = 'dispatched'").get().count, 2);
+
+  let retries = 0;
+  await processTrackingMessage({
+    body: queued[0].body,
+    ack() { throw new Error("A temporary carrier failure must not be acknowledged."); },
+    retry() { retries += 1; }
+  }, env, { fetchImpl: async () => { throw new Error("Temporary Okapi outage"); } });
+  assert.equal(retries, 1);
+  assert.equal(database.prepare("SELECT status FROM monitor_jobs WHERE record_id = ?").get(queued[0].body.recordId).status, "retrying");
+
+  const dispatchedBeforeSafetyTrigger = queued.length;
+  const safetyTrigger = await enqueueDailyMonitor(env, new Date("2026-09-04T05:35:00.000Z"));
+  assert.deepEqual(safetyTrigger, { skipped: false, resumed: true, runDate: "2026-09-04", queuedCount: 0 });
+  assert.equal(queued.length, dispatchedBeforeSafetyTrigger);
+});
+
 test("keeps a known pickup state through ambiguous tracking and preserves carrier evidence on API failure", async (context) => {
   const { database, db } = await monitorDatabase();
   context.after(() => database.close());
