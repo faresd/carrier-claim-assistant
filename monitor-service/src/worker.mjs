@@ -136,6 +136,10 @@ export async function monitorHealth(env = {}, request = new Request(`${DASHBOARD
 
 function secureAssetHeaders(headers) {
   const next = new Headers(headers);
+  // The dashboard bootstraps an authenticated session and must never be served
+  // from an intermediary cache. Keep this explicit even when the asset origin
+  // supplies a public cache directive.
+  next.set("cache-control", "no-store");
   next.set("content-security-policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'");
   next.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
   next.set("referrer-policy", "no-referrer");

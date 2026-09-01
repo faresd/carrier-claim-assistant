@@ -101,6 +101,7 @@ test("dashboard exposes the required order queues, account filter, claims, resol
 
 test("dashboard assets are protected by a restrictive browser security policy", () => {
   assert.match(worker, /content-security-policy/);
+  assert.match(worker, /next\.set\("cache-control", "no-store"\)/);
   assert.match(worker, /frame-ancestors 'none'/);
   assert.match(worker, /x-content-type-options/);
   assert.match(worker, /permissions-policy/);
