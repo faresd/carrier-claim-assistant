@@ -1,7 +1,7 @@
 (function initReturnDashboard() {
   "use strict";
 
-  const state = { orders: [], view: "all", query: "", accountId: "", csrfToken: "", user: null, authenticated: false };
+  const state = { orders: [], view: "all", query: "", accountId: "", csrfToken: "", user: null, authenticated: false, claimOrder: null };
   const body = document.getElementById("orders-body");
   const table = document.querySelector(".table-wrap");
   const loading = document.getElementById("loading");
@@ -188,10 +188,13 @@
       ["Seller account", order.accountName || order.accountId], ["Marketplace", order.marketplaceId],
       ["Tracking state", labelFor(order.trackingState)], ["Tracking number", order.trackingNumber],
       ["Carrier", order.carrierLabel || order.carrierId], ["Last checked", dateTime(order.checkedAt)],
-      ["Recipient", order.recipientName], ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
+      ["Shipment dates", [order.shipDate && `Shipped ${order.shipDate}`, order.deliverBy && `Deliver by ${order.deliverBy}`].filter(Boolean).join(" · ")],
+      ["Recipient title", claimData.recipientTitle], ["Recipient", order.recipientName], ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
       ["Sender", [sender.companyName, sender.contactFirstName, sender.contactLastName].filter(Boolean).join(" ")],
       ["Sender contact", [sender.email, sender.phone].filter(Boolean).join(" · ")],
+      ["Sender address", [sender.address1, sender.address2, sender.postalCode, sender.city, sender.country].filter(Boolean).join(", ")],
       ["Item", [item.productName || order.productName, item.asin, item.sku, item.quantity ? `Qty ${item.quantity}` : "", item.itemValue || order.itemValue].filter(Boolean).join(" · ")],
+      ["Claim reason", order.claimReason || defaultClaimReason(order)],
       ["Claim message", claimData.details],
       ["Current carrier event", order.statusText], ["Carrier summary", order.statusSummary],
       ["Claim", `${order.claimStatus || "none"}${order.claimReference ? ` · ${order.claimReference}` : ""}`],
@@ -210,6 +213,36 @@
     } catch (error) {
       document.getElementById("event-history").textContent = error.message;
     }
+  }
+
+  function openClaimDialog(order) {
+    const claimData = claimPackage(order);
+    const sender = claimData.sender || {};
+    const item = claimData.order || {};
+    const isLaPoste = !/chrono/i.test(order.carrierId || order.carrierLabel);
+    const rows = [
+      ["Seller account", order.accountName || order.accountId],
+      ["Tracking", `${order.trackingNumber} · ${order.carrierLabel || order.carrierId || "Carrier"}`],
+      ["Recipient", [claimData.recipientTitle, order.recipientName].filter(Boolean).join(" ")],
+      ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
+      ["Sender", [sender.companyName, sender.contactFirstName, sender.contactLastName].filter(Boolean).join(" ")],
+      ["Sender contact", [sender.email, sender.phone].filter(Boolean).join(" · ")],
+      ["Sender address", [sender.address1, sender.address2, sender.postalCode, sender.city, sender.country].filter(Boolean).join(", ")],
+      ["Item", [item.productName || order.productName, item.asin, item.sku, item.quantity ? `Qty ${item.quantity}` : "", item.itemValue || order.itemValue].filter(Boolean).join(" · ")],
+      ["Carrier status", order.statusText || "Waiting for a carrier check"]
+    ];
+    state.claimOrder = order;
+    document.getElementById("claim-dialog-title").textContent = `${isLaPoste ? "La Poste" : "Chronopost"} claim`;
+    document.getElementById("claim-order-summary").textContent = `Order ${order.orderId} · checked ${dateTime(order.checkedAt)}`;
+    document.getElementById("claim-context").innerHTML = rows.map(([label, value], index) => `<article class="${index >= 3 ? "wide" : ""}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "Not captured")}</strong></article>`).join("");
+    document.getElementById("claim-reason").value = defaultClaimReason(order);
+    document.getElementById("claim-details").value = claimData.details || order.claimTitle || order.statusText || "";
+    const titleRow = document.getElementById("claim-recipient-title-row");
+    const title = document.getElementById("claim-recipient-title");
+    titleRow.hidden = !isLaPoste;
+    title.required = isLaPoste;
+    title.value = isLaPoste && ["Monsieur", "Madame"].includes(claimData.recipientTitle) ? claimData.recipientTitle : "";
+    document.getElementById("claim-dialog").showModal();
   }
 
   async function loadDevices() {
@@ -271,6 +304,7 @@
     const order = state.orders.find((item) => item.recordId === recordId);
     if (!order) return;
     if (button.dataset.detail) return showDetails(order);
+    if (button.dataset.launchClaim) return openClaimDialog(order);
     button.disabled = true;
     try {
       if (button.dataset.resolve) {
@@ -283,28 +317,45 @@
         await api(`/api/orders/${encodeURIComponent(recordId)}/reopen`, { method: "POST", body: "{}" });
         notify("Order reopened.");
       }
-      if (button.dataset.launchClaim) {
-        const claimData = claimPackage(order);
-        const reason = prompt("Claim reason: lost, returned, delayed, damaged, delivered_missing, contents_missing, or other", defaultClaimReason(order));
-        if (!reason) return;
-        const details = prompt("Review or edit the claim message", claimData.details || order.claimTitle || order.statusText || "");
-        if (!details) return;
-        const isLaPoste = !/chrono/i.test(order.carrierId || order.carrierLabel);
-        const recipientTitle = isLaPoste ? prompt("Recipient title required by La Poste (Monsieur or Madame)", claimData.recipientTitle || "") : claimData.recipientTitle || "";
-        if (isLaPoste && !recipientTitle) return;
-        const claimWindow = window.open("about:blank", "_blank");
-        const launch = await api(`/api/orders/${encodeURIComponent(recordId)}/launch-claim`, {
-          method: "POST",
-          body: JSON.stringify({ reason, details, recipientTitle })
-        });
-        if (!claimWindow) throw new Error("Allow pop-ups for this dashboard, then try again.");
-        claimWindow.opener = null;
-        claimWindow.location.href = launch.url;
-        notify(`${launch.carrier === "chronopost" ? "Chronopost" : "La Poste"} claim opened in the paired extension.`);
-      }
       await load();
     } catch (error) { notify(error.message); }
     finally { button.disabled = false; }
+  });
+
+  document.querySelectorAll("[data-claim-cancel]").forEach((button) => button.addEventListener("click", () => {
+    state.claimOrder = null;
+    document.getElementById("claim-dialog").close();
+  }));
+  document.getElementById("claim-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const order = state.claimOrder;
+    if (!order) return;
+    const reason = document.getElementById("claim-reason").value;
+    const details = document.getElementById("claim-details").value.trim();
+    const isLaPoste = !/chrono/i.test(order.carrierId || order.carrierLabel);
+    const recipientTitle = isLaPoste ? document.getElementById("claim-recipient-title").value : claimPackage(order).recipientTitle || "";
+    if (!details || (isLaPoste && !recipientTitle)) return event.currentTarget.reportValidity();
+    const claimWindow = window.open("about:blank", "_blank");
+    if (!claimWindow) return notify("Allow pop-ups for this dashboard, then try again.");
+    claimWindow.opener = null;
+    const submit = document.getElementById("claim-submit");
+    submit.disabled = true;
+    try {
+      const launch = await api(`/api/orders/${encodeURIComponent(order.recordId)}/launch-claim`, {
+        method: "POST",
+        body: JSON.stringify({ reason, details, recipientTitle })
+      });
+      claimWindow.location.href = launch.url;
+      state.claimOrder = null;
+      document.getElementById("claim-dialog").close();
+      notify(`${launch.carrier === "chronopost" ? "Chronopost" : "La Poste"} claim opened in the paired extension.`);
+      await load();
+    } catch (error) {
+      claimWindow.close();
+      notify(error.message);
+    } finally {
+      submit.disabled = false;
+    }
   });
 
   document.getElementById("sso-sign-in").addEventListener("click", startLogin);

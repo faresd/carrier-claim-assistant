@@ -13,6 +13,7 @@ const migration = read("monitor-service", "migrations", "0001_initial.sql");
 const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
+const dashboardStyles = read("monitor-service", "admin", "styles.css");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
 const productionSmoke = read("monitor-service", "scripts", "smoke-production.mjs");
@@ -60,8 +61,17 @@ test("dashboard exposes the required order queues, account filter, claims, resol
     assert.match(dashboard, new RegExp(`data-view="${view}"`));
   }
   assert.match(dashboard, /id="account-filter"/);
+  assert.match(dashboard, /id="claim-dialog"/);
+  assert.match(dashboard, /id="claim-reason"/);
+  assert.match(dashboard, /id="claim-recipient-title"/);
+  assert.match(dashboard, /id="claim-details"/);
   assert.match(dashboardScript, /data-launch-claim/);
-  assert.match(dashboardScript, /Review or edit the claim message/);
+  assert.match(dashboardScript, /openClaimDialog/);
+  assert.match(dashboardScript, /Sender address/);
+  assert.match(dashboardScript, /Destination/);
+  assert.match(dashboardScript, /claim-form/);
+  assert.match(dashboardScript, /launch-claim/);
+  assert.doesNotMatch(dashboardScript, /\bprompt\(/);
   assert.match(dashboardScript, /\["returning", "pickup_ready"\].*return "returned"/);
   assert.match(dashboardScript, /contents_missing/);
   assert.match(dashboardScript, /data-resolve/);
@@ -78,6 +88,7 @@ test("dashboard assets are protected by a restrictive browser security policy", 
   assert.match(worker, /DASHBOARD_ORIGIN = "https:\/\/tracking\.cheaply\.fr"/);
   assert.match(worker, /EXTENSION_ORIGIN = \/\^chrome-extension:/);
   assert.doesNotMatch(worker, /access-control-allow-origin": request\.headers\.get\("origin"\) \|\| "\*"/);
+  assert.match(dashboardStyles, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
 });
 
 test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", () => {

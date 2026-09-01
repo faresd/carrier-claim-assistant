@@ -214,7 +214,26 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
     ...firstOrder,
     trackingState: "pickup_ready",
     statusText: "Votre envoi retourné est disponible au bureau de poste.",
-    checkedAt: "2026-09-02T07:00:00.000Z"
+    checkedAt: "2026-09-02T07:00:00.000Z",
+    recipientName: "Camille Martin",
+    recipientAddress1: "12 rue Exemple",
+    recipientPostalCode: "75001",
+    recipientCity: "Paris",
+    recipientCountry: "France",
+    claimPayload: {
+      recipientTitle: "Monsieur",
+      details: "Initial returned parcel message",
+      sender: {
+        companyName: "Demo SARL",
+        email: "claims@example.com",
+        phone: "+33102030405",
+        address1: "1 avenue Démo",
+        postalCode: "75002",
+        city: "Paris",
+        country: "France"
+      },
+      order: { productName: "Synthetic replacement part", asin: "B000DEMO", sku: "DEMO-1", quantity: "1", itemValue: "49,90 €" }
+    }
   });
   const alertsResponse = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
   assert.equal(alertsResponse.status, 200);
@@ -237,6 +256,41 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
     .bind(new Date(Date.now() - 21 * 3600000).toISOString(), pickup.recordId, pairing.deviceId).run();
   const nextDayAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
   assert.equal((await nextDayAlerts.json()).orders.length, 1);
+
+  const launchResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/launch-claim`, {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: { reason: "returned", details: "Edited dashboard claim message", recipientTitle: "Madame" }
+  }), env);
+  assert.equal(launchResponse.status, 200);
+  const launch = await launchResponse.json();
+  assert.equal(launch.carrier, "laposte");
+  assert.match(launch.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+  const launchToken = new URL(launch.url).hash.replace("#carrier-claim-launch=", "");
+  assert.match(launchToken, /^[A-Za-z0-9]{64}$/);
+
+  const redeemResponse = await monitorWorker.fetch(jsonRequest("/api/claim-launch/redeem", {
+    token: pairing.token,
+    body: { token: launchToken }
+  }), env);
+  assert.equal(redeemResponse.status, 200);
+  const redeemed = await redeemResponse.json();
+  assert.equal(redeemed.claim.reason, "returned");
+  assert.equal(redeemed.claim.details, "Edited dashboard claim message");
+  assert.equal(redeemed.claim.recipientTitle, "Madame");
+  assert.equal(redeemed.claim.sender.email, "claims@example.com");
+  assert.equal(redeemed.claim.sender.address1, "1 avenue Démo");
+  assert.equal(redeemed.claim.order.recipientName, "Camille Martin");
+  assert.equal(redeemed.claim.order.recipientAddress1, "12 rue Exemple");
+  assert.equal(redeemed.claim.order.sku, "DEMO-1");
+
+  const repeatedRedemption = await monitorWorker.fetch(jsonRequest("/api/claim-launch/redeem", {
+    token: pairing.token,
+    body: { token: launchToken }
+  }), env);
+  assert.equal(repeatedRedemption.status, 400);
+  assert.match((await repeatedRedemption.json()).error, /invalid, expired, or already used/i);
 
   const resolvedResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/resolve`, {
     cookie: adminCookie,

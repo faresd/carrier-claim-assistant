@@ -98,6 +98,35 @@
       </form>
     </dialog>
 
+    <dialog id="claim-dialog">
+      <form id="claim-form" class="dialog-card claim-card">
+        <header><div><span class="eyebrow">Carrier claim</span><h2 id="claim-dialog-title">Review claim</h2></div><button class="icon-button" type="button" data-claim-cancel aria-label="Close">×</button></header>
+        <div class="claim-content">
+          <p id="claim-order-summary"></p>
+          <section id="claim-context" class="claim-context" aria-label="Stored claim information"></section>
+          <div class="claim-fields">
+            <label><span>Complaint reason</span><select id="claim-reason" required>
+              <option value="lost">Lost / unlocated</option>
+              <option value="returned">Returned parcel</option>
+              <option value="delayed">Delayed</option>
+              <option value="damaged">Damaged</option>
+              <option value="delivered_missing">Marked delivered but missing</option>
+              <option value="contents_missing">Contents missing</option>
+              <option value="other">Other</option>
+            </select></label>
+            <label id="claim-recipient-title-row"><span>Recipient title</span><select id="claim-recipient-title">
+              <option value="">Select</option>
+              <option value="Monsieur">Monsieur</option>
+              <option value="Madame">Madame</option>
+            </select></label>
+            <label class="claim-message"><span>Editable complaint message</span><textarea id="claim-details" rows="5" maxlength="500" required></textarea></label>
+          </div>
+          <p class="claim-hint">The paired extension will open the official carrier workflow with these saved details. Final carrier submission still requires confirmation.</p>
+        </div>
+        <footer><button class="button button--secondary" type="button" data-claim-cancel>Cancel</button><button id="claim-submit" class="button" type="submit">Open official claim</button></footer>
+      </form>
+    </dialog>
+
     <div id="toast" role="status" aria-live="polite"></div>
     <script src="/app.js"></script>
   </body>
