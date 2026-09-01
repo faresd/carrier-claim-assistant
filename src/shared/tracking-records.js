@@ -57,6 +57,74 @@
     return Object.fromEntries(allowed.map((key) => [key, String(order[key] || "").slice(0, 500)]));
   }
 
+  function identity(record = {}) {
+    const nested = record.order && typeof record.order === "object" ? record.order : {};
+    const orderId = String(record.orderId || nested.orderId || "").slice(0, 40);
+    const sellerAccountId = String(
+      record.sellerAccountId || record.accountId || nested.sellerAccountId || nested.accountId || "sellercentral.amazon.fr"
+    ).slice(0, 180);
+    const marketplaceId = String(
+      record.marketplaceId || nested.marketplaceId || "A13V1IB3VIYZZH"
+    ).slice(0, 180);
+    return { orderId, sellerAccountId, marketplaceId };
+  }
+
+  function recordKey(record = {}) {
+    const parts = identity(record);
+    return parts.orderId ? `${parts.sellerAccountId}|${parts.marketplaceId}|${parts.orderId}` : "";
+  }
+
+  function trackingNumber(record = {}) {
+    return String(record.trackingNumber || record.order?.trackingNumber || "").toUpperCase();
+  }
+
+  function findRecordEntry(collection = {}, wanted = {}) {
+    const wantedIdentity = identity(wanted);
+    if (!wantedIdentity.orderId) return null;
+    const exactKey = recordKey(wanted);
+    if (collection[exactKey]) return { key: exactKey, value: collection[exactKey] };
+
+    const legacy = collection[wantedIdentity.orderId];
+    const wantedTracking = trackingNumber(wanted);
+    if (legacy && (!wantedTracking || !trackingNumber(legacy) || trackingNumber(legacy) === wantedTracking)) {
+      return { key: wantedIdentity.orderId, value: legacy };
+    }
+
+    let candidates = Object.entries(collection).filter(([, value]) => identity(value).orderId === wantedIdentity.orderId);
+    if (wantedTracking) {
+      const matchingTracking = candidates.filter(([, value]) => !trackingNumber(value) || trackingNumber(value) === wantedTracking);
+      if (matchingTracking.length) candidates = matchingTracking;
+    }
+    const exactAccount = candidates.filter(([, value]) => {
+      const current = identity(value);
+      return current.sellerAccountId === wantedIdentity.sellerAccountId && current.marketplaceId === wantedIdentity.marketplaceId;
+    });
+    if (exactAccount.length === 1) return { key: exactAccount[0][0], value: exactAccount[0][1] };
+    if (candidates.length !== 1) return null;
+    const candidateIdentity = identity(candidates[0][1]);
+    const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+    return fallbackAccounts.has(wantedIdentity.sellerAccountId) || fallbackAccounts.has(candidateIdentity.sellerAccountId)
+      ? { key: candidates[0][0], value: candidates[0][1] }
+      : null;
+  }
+
+  function findRecord(collection = {}, wanted = {}) {
+    return findRecordEntry(collection, wanted)?.value || null;
+  }
+
+  function rekeyRecords(collection = {}) {
+    const next = {};
+    for (const [legacyKey, value] of Object.entries(collection || {})) {
+      if (!value || typeof value !== "object") continue;
+      const key = recordKey(value) || legacyKey;
+      const existing = next[key];
+      const existingTime = new Date(existing?.updatedAt || existing?.submittedAt || existing?.checkedAt || 0).getTime();
+      const valueTime = new Date(value.updatedAt || value.submittedAt || value.checkedAt || 0).getTime();
+      if (!existing || !Number.isFinite(existingTime) || valueTime >= existingTime) next[key] = value;
+    }
+    return next;
+  }
+
   function buildRecord({ order = {}, result = {}, recommendation = {}, outcome = null, previous = null, now = new Date().toISOString() } = {}) {
     const safeOrder = cleanOrder(order);
     const hasFreshStatus = Boolean(result.statusText || result.summaryText || recommendation.statusText);
@@ -109,7 +177,10 @@
     return states[record?.trackingState] || null;
   }
 
-  const api = { normalize, trackingState, isTerminal, monitorEligible, cleanOrder, buildRecord, badgeForRecord };
+  const api = {
+    normalize, trackingState, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
+    findRecordEntry, findRecord, rekeyRecords, buildRecord, badgeForRecord
+  };
   root.CarrierTrackingRecords = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

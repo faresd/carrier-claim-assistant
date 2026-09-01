@@ -92,18 +92,12 @@ function bearer(request) {
   return request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || "";
 }
 
-function authorized(request, expected) {
-  const actual = bearer(request);
-  return Boolean(expected && actual && actual.length === expected.length && actual === expected);
-}
-
 async function sha256(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function extensionAuthorized(request, env) {
-  if (authorized(request, env.SYNC_TOKEN)) return { authorized: true, deviceId: "master" };
   const token = bearer(request);
   if (!token) return { authorized: false, deviceId: "" };
   const tokenHash = await sha256(token);

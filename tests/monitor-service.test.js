@@ -48,6 +48,7 @@ test("browser pairing is short-lived, rate-limited, and revocable from the dashb
   assert.match(worker, /EXTENSION_ORIGIN\.test\(origin\)/);
   assert.match(worker, /\/api\/devices/);
   assert.match(worker, /revoked_at = \?/);
+  assert.doesNotMatch(worker, /SYNC_TOKEN/);
   assert.match(dashboard, /id="device-list"/);
   assert.match(dashboardScript, /data-revoke-device/);
 });

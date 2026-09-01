@@ -6,6 +6,7 @@
   const parser = globalThis.LaPosteOrderParser;
   const rules = globalThis.CarrierClaimRules;
   const outcomeRules = globalThis.CarrierClaimOutcomeRules;
+  const trackingRecords = globalThis.CarrierTrackingRecords;
   let order = parser.parseOrderDetails(document.body.innerText, location.href);
   let carrier = rules.detectCarrier(order);
   const state = { result: null, recommendation: null, checkedAt: "", checking: false, requestId: null, outcome: null, noteAttempts: 0 };
@@ -73,11 +74,14 @@
 
   async function markSellerNoteSaved(outcome) {
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcomes = { ...(stored.claimOutcomesByOrder || {}) };
-    const saved = outcomes[outcome.orderId];
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const savedEntry = trackingRecords.findRecordEntry(outcomes, outcome);
+    const saved = savedEntry?.value;
     if (!saved || saved.id !== outcome.id) return;
-    outcomes[outcome.orderId] = { ...saved, noteSaved: true };
-    state.outcome = outcomes[outcome.orderId];
+    const key = trackingRecords.recordKey(saved);
+    if (savedEntry.key !== key) delete outcomes[savedEntry.key];
+    outcomes[key] = { ...saved, noteSaved: true };
+    state.outcome = outcomes[key];
     await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
   }
 
@@ -113,7 +117,7 @@
   async function storedOutcomeForOrder() {
     if (!order.orderId) return null;
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcome = stored.claimOutcomesByOrder?.[order.orderId] || null;
+    const outcome = trackingRecords.findRecord(stored.claimOutcomesByOrder || {}, order);
     return outcome?.trackingNumber === order.trackingNumber ? outcome : null;
   }
 
@@ -133,6 +137,9 @@
       carrier: carrier.id,
       orderId: order.orderId,
       trackingNumber: order.trackingNumber,
+      sellerAccountId: order.sellerAccountId || "sellercentral.amazon.fr",
+      sellerAccountName: order.sellerAccountName || "Seller Central account",
+      marketplaceId: order.marketplaceId || "A13V1IB3VIYZZH",
       reason: reason || state.recommendation?.reason || "other",
       reference: normalizedReference,
       confirmationText: "Existing carrier claim recorded from its confirmation reference.",
@@ -140,8 +147,12 @@
       noteSaved: false
     };
     outcome.sellerNote = outcomeRules.buildSellerNote(outcome);
+    outcome.recordId = trackingRecords.recordKey(outcome);
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcomes = { ...(stored.claimOutcomesByOrder || {}), [order.orderId]: outcome };
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const previous = trackingRecords.findRecordEntry(outcomes, outcome);
+    if (previous?.key && previous.key !== outcome.recordId) delete outcomes[previous.key];
+    outcomes[outcome.recordId] = outcome;
     await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
     await chrome.runtime.sendMessage({
       type: "REGISTER_TRACKED_ORDER",
@@ -167,7 +178,8 @@
   async function storedDeliveredAuditForOrder() {
     if (!order.orderId || !order.trackingNumber) return null;
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
-    const audit = stored.orderAuditResultsByOrder?.[order.orderId] || null;
+    const audits = stored.orderAuditResultsByOrder || {};
+    const audit = audits[trackingRecords.recordKey(order)] || audits[order.orderId] || null;
     if (audit?.order?.trackingNumber !== order.trackingNumber) return null;
     const auditedCarrierId = audit?.result?.carrier || audit?.recommendation?.carrier?.id || "";
     if (auditedCarrierId && auditedCarrierId !== carrier.id) return null;
@@ -179,7 +191,9 @@
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
     const audits = { ...(stored.orderAuditResultsByOrder || {}) };
     const checkedAt = result?.checkedAt || new Date().toISOString();
-    audits[order.orderId] = {
+    const key = trackingRecords.recordKey(order);
+    delete audits[order.orderId];
+    audits[key] = {
       order: { ...order },
       result: result || null,
       recommendation: recommendation || null,
@@ -194,6 +208,7 @@
     if (!order.orderId) return;
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
     const audits = { ...(stored.orderAuditResultsByOrder || {}) };
+    delete audits[trackingRecords.recordKey(order)];
     delete audits[order.orderId];
     await chrome.storage.local.set({ orderAuditResultsByOrder: audits });
     state.checkedAt = "";

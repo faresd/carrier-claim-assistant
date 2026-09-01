@@ -83,3 +83,27 @@ test("enriching the seller account corrects an earlier fallback record key", () 
   });
   assert.equal(record.recordId, "merchant-real|A13V1IB3VIYZZH|111-2222222-3333333");
 });
+
+test("keeps the same Amazon order number isolated across seller accounts", () => {
+  const orderId = "999-1111111-2222222";
+  const first = {
+    recordId: `merchant-a|amazon-fr|${orderId}`,
+    orderId,
+    sellerAccountId: "merchant-a",
+    marketplaceId: "amazon-fr",
+    trackingNumber: "CC000000001FR"
+  };
+  const second = {
+    recordId: `merchant-b|amazon-fr|${orderId}`,
+    orderId,
+    sellerAccountId: "merchant-b",
+    marketplaceId: "amazon-fr",
+    trackingNumber: "XY123456789FR"
+  };
+  const collection = records.rekeyRecords({ [orderId]: first, second });
+
+  assert.equal(records.findRecord(collection, first).trackingNumber, "CC000000001FR");
+  assert.equal(records.findRecord(collection, second).trackingNumber, "XY123456789FR");
+  assert.equal(records.findRecord(collection, { orderId }), null);
+  assert.deepEqual(Object.keys(collection).sort(), [first.recordId, second.recordId].sort());
+});
