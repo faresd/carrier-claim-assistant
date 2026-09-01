@@ -31,7 +31,7 @@ The extension does not send order, recipient, sender, or claim data to the exten
 
 Sender settings, cached audit results, and successful claim outcomes are stored in browser extension storage on the user's device. Pending claim details use browser session storage. Delivered results may be kept until the user clears extension data or uninstalls the extension so that repeated carrier checks are unnecessary.
 
-When cloud sync is enabled, synchronized records remain in the configured monitor database until the operator deletes that service/database. Marking a returned parcel as received moves it to Resolved and stops future tracking checks; it does not automatically delete the history. One-time browser pairing codes expire after ten minutes. Per-device tokens remain until revoked or the monitor database is removed.
+When cloud sync is enabled, synchronized records—including the sender, recipient, shipment, item, and editable claim-preparation fields needed for the operator's carrier workflow—remain in the configured monitor database until the operator deletes that service/database. Marking a returned parcel as received moves it to Resolved and stops future tracking checks; it does not automatically delete the history. Browser pairing codes and claim-launch links expire after ten minutes. Per-device tokens remain until revoked or the monitor database is removed.
 
 ## Sharing and sale
 
