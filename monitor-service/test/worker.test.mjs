@@ -123,3 +123,39 @@ test("accepts a newer carrier snapshot but keeps delivered terminal forever", as
   assert.match(row.status_text, /livr/i);
   assert.equal(row.checked_at, "2026-09-01T08:00:00.000Z");
 });
+
+test("moves an early fallback record into the discovered Amazon seller account without duplicating it", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const orderId = "408-9133278-8011502";
+  const marketplaceId = "A13V1IB3VIYZZH";
+  const initial = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "sellercentral.amazon.fr",
+    marketplaceId,
+    trackingState: "returning",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  });
+  const enriched = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
+    sellerAccountName: "Cheaply France",
+    marketplaceId,
+    trackingState: "pickup_ready",
+    checkedAt: "2026-09-02T07:00:00.000Z"
+  });
+
+  const rows = database.prepare("SELECT record_id, account_id, account_name, tracking_state FROM orders").all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].record_id, initial.recordId);
+  assert.equal(enriched.recordId, initial.recordId);
+  assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
+  assert.equal(rows[0].account_name, "Cheaply France");
+  assert.equal(rows[0].tracking_state, "pickup_ready");
+  assert.deepEqual(
+    database.prepare("SELECT account_id FROM seller_accounts ORDER BY account_id").all().map((row) => row.account_id),
+    ["amzn1.merchant.o.A19A98AEOKAGHS"]
+  );
+});
