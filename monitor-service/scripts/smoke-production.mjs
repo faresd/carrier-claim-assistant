@@ -5,7 +5,7 @@ const DEFAULT_ORIGIN = "https://tracking.cheaply.fr";
 async function verifyOnce(origin, fetchImpl) {
   const health = await fetchImpl(`${origin}/api/health`, { redirect: "manual", headers: { accept: "application/json" } });
   const healthPayload = await health.json().catch(() => ({}));
-  if (health.status !== 200 || healthPayload.ok !== true || healthPayload.service !== "carrier-return-monitor") {
+  if (health.status !== 200 || healthPayload.ok !== true || healthPayload.ready !== true || healthPayload.service !== "carrier-return-monitor") {
     throw new Error(`Health endpoint returned HTTP ${health.status}.`);
   }
 
