@@ -3,13 +3,21 @@ import { pathToFileURL } from "node:url";
 const PROBE_TRACKING_ID = "CCAUDIT000000FR";
 const ENDPOINT = `https://api.laposte.fr/suivi/v2/idships/${PROBE_TRACKING_ID}?lang=fr_FR`;
 
-export async function verifyLaPosteAccess({ apiKey = process.env.LAPOSTE_OKAPI_KEY, fetchImpl = fetch } = {}) {
+export async function verifyLaPosteAccess({
+  apiKey = process.env.LAPOSTE_OKAPI_KEY,
+  fetchImpl = fetch,
+  allowPending = process.env.LAPOSTE_ALLOW_PENDING === "true"
+} = {}) {
   const key = String(apiKey || "").trim();
   if (!key) throw new Error("LAPOSTE_OKAPI_KEY is not configured.");
   const response = await fetchImpl(ENDPOINT, {
     redirect: "manual",
     headers: { accept: "application/json", "X-Okapi-Key": key }
   });
+  if (response.status === 403 && allowPending) {
+    console.warn("La Poste Suivi v2 access is pending provider approval; continuing with infrastructure deployment.");
+    return { authorized: false, pending: true };
+  }
   if ([401, 403].includes(response.status)) {
     throw new Error(`La Poste Suivi v2 did not authorize the configured application key (HTTP ${response.status}).`);
   }
@@ -28,8 +36,12 @@ export async function verifyLaPosteAccess({ apiKey = process.env.LAPOSTE_OKAPI_K
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    await verifyLaPosteAccess();
-    console.log("La Poste Suivi v2 application access is ready.");
+    const result = await verifyLaPosteAccess();
+    if (result?.pending) {
+      console.log("La Poste Suivi v2 access is pending provider approval.");
+    } else {
+      console.log("La Poste Suivi v2 application access is ready.");
+    }
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
