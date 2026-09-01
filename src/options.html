@@ -11,7 +11,7 @@
       <header>
         <span class="eyebrow">Carrier Claim Assistant</span>
         <h1>Sender settings</h1>
-        <p>Saved only in this browser. These values are used as the defaults for every new claim.</p>
+        <p>Sender details stay in this browser. Optional monitor settings connect it to your private cloud history.</p>
       </header>
       <form id="settings-form">
         <section>
@@ -54,14 +54,32 @@
             <label>La Poste overdue threshold (days) <input name="laposteOverdueDays" type="number" min="1" max="30" value="7" required></label>
           </div>
         </section>
+        <section>
+          <h2>Return monitor server</h2>
+          <p class="section-copy">Optional cloud sync keeps one history across browsers and enables the daily returned-parcel monitor.</p>
+          <div class="grid grid--2">
+            <label class="checkbox-row span-2"><input name="cloudSyncEnabled" type="checkbox"> Sync orders and tracking status to the return monitor server</label>
+            <label class="span-2">Monitor server URL <input name="monitorServerUrl" type="url" placeholder="https://tracking.cheaply.fr" autocomplete="url"></label>
+            <label>Six-digit pairing code <input name="monitorPairingCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" autocomplete="one-time-code"></label>
+            <div class="field-action"><button id="pair-monitor" type="button">Connect this browser</button></div>
+            <details class="span-2 advanced-settings"><summary>Advanced connection settings</summary>
+              <label>Extension sync token <input name="monitorAccessToken" type="password" autocomplete="new-password" placeholder="Filled automatically after pairing"></label>
+            </details>
+            <label class="checkbox-row span-2"><input name="pickupNotifications" type="checkbox" checked> Show an urgent browser notification when a returned parcel is waiting for pickup</label>
+          </div>
+          <div class="inline-actions">
+            <button id="test-monitor" class="button-secondary" type="button">Test connection</button>
+            <button id="open-monitor" class="button-secondary" type="button">Open admin dashboard</button>
+          </div>
+        </section>
         <div class="form-footer">
           <span id="status" role="status"></span>
-          <button type="submit">Save sender settings</button>
+          <button type="submit">Save settings</button>
         </div>
       </form>
       <aside>
         <strong>Privacy note</strong>
-        <p>Sender settings stay in Chrome/Brave extension storage. Buyer and order data use session storage and can be cleared from the carrier assistant panel. Automatic checks send only the tracking number to its official carrier. Recipient title is deliberately left for review because Amazon does not provide it.</p>
+        <p>Cloud sync is off by default. When enabled, order, recipient, tracking, status, and claim details are sent to the configured private monitor server. The La Poste API key remains on that server and is never stored in the extension. Automatic carrier checks send only the tracking number to the official carrier API.</p>
       </aside>
     </main>
     <script src="options.js"></script>

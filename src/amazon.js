@@ -117,6 +117,43 @@
     return outcome?.trackingNumber === order.trackingNumber ? outcome : null;
   }
 
+  async function recordExistingClaim(reference, reason) {
+    const normalizedReference = String(reference || "").trim().toUpperCase().replace(/\s+/g, "");
+    if (!/^[A-Z0-9][A-Z0-9./_-]{4,39}$/.test(normalizedReference)) {
+      window.alert("Enter the reference exactly as shown on the carrier confirmation (for example, COL-91855121).");
+      return false;
+    }
+    const confirmed = window.confirm(
+      `Record this existing ${carrier.label} claim?\n\nReference: ${normalizedReference}\nTracking: ${order.trackingNumber}\nOrder: ${order.orderId}\n\nThis saves the claim state in the extension and adds it to Seller Notes when that field is available.`
+    );
+    if (!confirmed) return false;
+
+    const outcome = {
+      id: crypto.randomUUID(),
+      carrier: carrier.id,
+      orderId: order.orderId,
+      trackingNumber: order.trackingNumber,
+      reason: reason || state.recommendation?.reason || "other",
+      reference: normalizedReference,
+      confirmationText: "Existing carrier claim recorded from its confirmation reference.",
+      submittedAt: new Date().toISOString(),
+      noteSaved: false
+    };
+    outcome.sellerNote = outcomeRules.buildSellerNote(outcome);
+    const stored = await chrome.storage.local.get("claimOutcomesByOrder");
+    const outcomes = { ...(stored.claimOutcomesByOrder || {}), [order.orderId]: outcome };
+    await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
+    await chrome.runtime.sendMessage({
+      type: "REGISTER_TRACKED_ORDER",
+      order,
+      result: state.result || {},
+      recommendation: state.recommendation || null,
+      outcome
+    }).catch(() => {});
+    await applyClaimOutcome(outcome);
+    return true;
+  }
+
   function trimAuditCache(audits) {
     const entries = Object.entries(audits || {});
     const deliveredEntries = entries.filter(([, audit]) => rules.isTerminalDeliveredRecommendation(audit?.recommendation));
@@ -373,10 +410,14 @@
             <textarea id="lpca-message-preview" maxlength="500" rows="7">${escapeHtml(previewMessage)}</textarea>
           </label>
           <small id="lpca-message-count" class="lpca-character-count">${previewMessage.length}/500</small>
+          <label>Existing claim reference <small>(already submitted)</small>
+            <input id="lpca-existing-claim-reference" placeholder="COL-91855121" autocomplete="off">
+          </label>
         </div>
         <p class="lpca-notice">Status is read from the official ${escapeHtml(carrier.label)} tracking page. The extension advances the official carrier session automatically, then pauses for CAPTCHA (if requested) and explicit final confirmation.</p>
         <div class="lpca-actions">
           <button type="button" id="lpca-recheck" class="lpca-button lpca-button--secondary">Check again</button>
+          <button type="button" id="lpca-record-existing" class="lpca-button lpca-button--secondary">Record existing claim</button>
           <button type="button" id="lpca-dialog-close" class="lpca-button lpca-button--secondary">Close</button>
           <button type="button" id="lpca-open-claim" class="lpca-button">${escapeHtml(actionLabel)}</button>
         </div>
@@ -386,6 +427,7 @@
     const messagePreview = dialog.querySelector("#lpca-message-preview");
     const recipientTitlePreview = dialog.querySelector("#lpca-recipient-title-preview");
     const recipientCountryPreview = dialog.querySelector("#lpca-recipient-country-preview");
+    const existingClaimReference = dialog.querySelector("#lpca-existing-claim-reference");
     const messageCount = dialog.querySelector("#lpca-message-count");
     const closeDialog = (event) => {
       event?.preventDefault();
@@ -411,6 +453,16 @@
       state.recommendation = null;
       state.requestId = null;
       checkStatus();
+    });
+    dialog.querySelector("#lpca-record-existing").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const recorded = await recordExistingClaim(existingClaimReference.value, reasonPreview.value);
+        if (recorded && dialog.open) dialog.close();
+      } finally {
+        button.disabled = false;
+      }
     });
     dialog.querySelector("#lpca-open-claim").addEventListener("click", () => openClaim({
       reason: reasonPreview.value,
@@ -483,7 +535,7 @@
   }
 
   async function refreshOrderFromPage() {
-    const nextOrder = parser.parseOrderDetails(document.body.innerText, location.href);
+    const nextOrder = parser.enrichSellerContext(parser.parseOrderDetails(document.body.innerText, location.href), document, location.href);
     const signature = orderSignature(nextOrder);
     if (signature === lastOrderSignature) return;
     lastOrderSignature = signature;
@@ -509,6 +561,14 @@
       setLaunchState("warning", `Unsupported carrier: ${carrier.label}`);
       return;
     }
+
+    chrome.runtime.sendMessage({
+      type: "REGISTER_TRACKED_ORDER",
+      order,
+      result: state.result || {},
+      recommendation: state.recommendation || null,
+      outcome: state.outcome || null
+    }).catch(() => {});
 
     if (!shipmentChanged) return;
 

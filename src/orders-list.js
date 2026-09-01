@@ -5,12 +5,14 @@
 
   const rules = globalThis.CarrierClaimRules;
   const listRules = globalThis.CarrierOrderListRules;
+  const trackingRecords = globalThis.CarrierTrackingRecords;
   const MAX_CONCURRENCY = 1;
   const CACHE_HOURS = 12;
   const state = {
     rows: new Map(),
     outcomes: {},
     audits: {},
+    records: {},
     settings: {},
     queue: [],
     queued: new Set(),
@@ -19,6 +21,8 @@
     paused: false,
     initialized: false,
     workerReleasePending: false,
+    remoteLookupQueued: new Set(),
+    remoteLookupTimer: null,
     observedPath: location.pathname
   };
 
@@ -117,6 +121,17 @@
     if (!entry) return;
     const outcome = state.outcomes[orderId];
     const audit = state.audits[orderId];
+    const trackingRecord = state.records[orderId];
+    const returnBadge = trackingRecords.badgeForRecord(trackingRecord);
+    if (returnBadge) {
+      setBadge(
+        entry,
+        returnBadge,
+        [trackingRecord.trackingNumber, trackingRecord.statusText].filter(Boolean).join(" · "),
+        { checkedAt: trackingRecord.checkedAt, submittedAt: outcome?.submittedAt }
+      );
+      return;
+    }
     if (outcome) {
       setBadge(
         entry,
@@ -166,21 +181,38 @@
       state.queue = [];
       state.queued.clear();
     }
+    const discoveredOrderIds = [];
     const links = [...document.querySelectorAll('a[href*="/orders-v3/order/"]')];
     for (const link of links) {
       const orderId = listRules.orderIdFromHref(link.href);
       if (!orderId || link.textContent.trim() !== orderId) continue;
       const row = link.closest("tr");
       if (!row) continue;
+      if (!state.rows.has(orderId)) discoveredOrderIds.push(orderId);
       state.rows.set(orderId, { orderId, link, row });
       renderOrder(orderId);
     }
+    if (state.initialized && discoveredOrderIds.length) scheduleRemoteLookup(discoveredOrderIds);
     updateToolbar();
     pumpQueue();
   }
 
+  function scheduleRemoteLookup(orderIds) {
+    for (const orderId of orderIds) state.remoteLookupQueued.add(orderId);
+    clearTimeout(state.remoteLookupTimer);
+    state.remoteLookupTimer = setTimeout(async () => {
+      const wanted = [...state.remoteLookupQueued];
+      state.remoteLookupQueued.clear();
+      const remote = await chrome.runtime.sendMessage({ type: "GET_TRACKED_RECORDS", refresh: true, orderIds: wanted }).catch(() => null);
+      if (!remote?.ok) return;
+      state.records = remote.records || state.records;
+      for (const orderId of wanted) renderOrder(orderId);
+    }, 250);
+  }
+
   function enqueue(orderId, force = false) {
     if (eligibility() !== "shipped" || state.outcomes[orderId]) return;
+    if (!force && trackingRecords.badgeForRecord(state.records[orderId])) return;
     if (state.queued.has(orderId) || state.starting.has(orderId) || [...state.active.values()].includes(orderId)) return;
     if (!force && listRules.auditIsFresh(state.audits[orderId], CACHE_HOURS)) return;
     state.queue.push(orderId);
@@ -247,7 +279,7 @@
     const count = (wanted) => badges.filter((badge) => badge.dataset.state === wanted).length;
     const checked = badges.filter((badge) => !["queued", "checking"].includes(badge.dataset.state)).length;
     const summary = eligibility() === "shipped"
-      ? `${checked}/${state.rows.size} checked · ${count("recommended")} recommended · ${count("sent")} sent · ${state.active.size + state.starting.size} active`
+      ? `${checked}/${state.rows.size} checked · ${count("pickup")} pickup · ${count("returned")} returning · ${count("recommended")} investigate · ${count("sent")} sent · ${state.active.size + state.starting.size} active`
       : `${state.rows.size} orders · claims are checked after shipment`;
     toolbar.querySelector("#lpca-orders-summary").textContent = summary;
     toolbar.querySelector("#lpca-orders-pause").disabled = eligibility() !== "shipped";
@@ -274,16 +306,24 @@
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || !changes.claimOutcomesByOrder) return;
-    state.outcomes = changes.claimOutcomesByOrder.newValue || {};
+    if (areaName !== "local") return;
+    if (changes.claimOutcomesByOrder) state.outcomes = changes.claimOutcomesByOrder.newValue || {};
+    if (changes.trackedOrdersByOrder) state.records = changes.trackedOrdersByOrder.newValue || {};
+    if (!changes.claimOutcomesByOrder && !changes.trackedOrdersByOrder) return;
     for (const orderId of state.rows.keys()) renderOrder(orderId);
   });
 
   async function init() {
-    const stored = await chrome.storage.local.get(["claimOutcomesByOrder", "orderAuditResultsByOrder", "claimSettings"]);
+    const stored = await chrome.storage.local.get(["claimOutcomesByOrder", "orderAuditResultsByOrder", "claimSettings", "trackedOrdersByOrder"]);
     state.outcomes = stored.claimOutcomesByOrder || {};
     state.audits = stored.orderAuditResultsByOrder || {};
     state.settings = stored.claimSettings || {};
+    state.records = stored.trackedOrdersByOrder || {};
+    discoverRows();
+    const remote = await chrome.runtime.sendMessage({ type: "GET_TRACKED_RECORDS", refresh: true, orderIds: [...state.rows.keys()] }).catch(() => null);
+    if (remote?.ok) state.records = remote.records || state.records;
+    state.queue = [];
+    state.queued.clear();
     state.initialized = true;
     discoverRows();
     let timer;

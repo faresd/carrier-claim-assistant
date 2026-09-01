@@ -118,6 +118,9 @@
 .lpca-order-badge[data-state="queued"], .lpca-order-badge[data-state="checking"] { border-color: #cbd4dd !important; background: #f3f5f7 !important; color: #526273 !important; }
 .lpca-order-badge[data-state="recommended"] { border-color: #e3a38a !important; background: #fff0ea !important; color: #8b3416 !important; }
 .lpca-order-badge[data-state="sent"] { border-color: #8dc9a4 !important; background: #eaf8ef !important; color: #176b3a !important; }
+.lpca-order-badge[data-state="pickup"] { border-color: #b53b06 !important; background: #d84f12 !important; color: #fff !important; box-shadow: 0 0 0 3px rgba(216, 79, 18, .18) !important; }
+.lpca-order-badge[data-state="returned"] { border-color: #c98712 !important; background: #fff0cf !important; color: #744a00 !important; }
+.lpca-order-badge[data-state="resolved"] { border-color: #3b8a57 !important; background: #e8f5ec !important; color: #176033 !important; }
 .lpca-order-badge[data-state="clear"] { border-color: #a9c9dd !important; background: #eff8fd !important; color: #245b78 !important; }
 .lpca-order-badge[data-state="review"] { border-color: #e3c27c !important; background: #fff8e6 !important; color: #795500 !important; }
 .lpca-order-badge[data-state="unsupported"], .lpca-order-badge[data-state="ineligible"] { border-color: #d5d9dd !important; background: #f7f7f7 !important; color: #6b737c !important; }

@@ -22,7 +22,7 @@
 
   const started = Date.now();
   const timer = setInterval(() => {
-    const order = parser.parseOrderDetails(document.body.innerText, location.href);
+    const order = parser.enrichSellerContext(parser.parseOrderDetails(document.body.innerText, location.href), document, location.href);
     if (order.orderId === expectedOrderId && order.trackingNumber) {
       clearInterval(timer);
       report(order);
