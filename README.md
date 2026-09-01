@@ -29,7 +29,7 @@ On **Orders → Manage Orders**, every seller-fulfilled order row receives a car
 
 Version 2.9 adds an optional private return-monitor service. Amazon order/tracking context is registered per Seller Central merchant and marketplace, so multiple Amazon accounts remain separated while the admin dashboard can show an All accounts view. The cloud monitor uses the official La Poste Suivi v2 API for Colissimo, La Poste, and Chronopost every morning at 07:00 Europe/Paris. Manage Orders badges prioritize **Returning to sender**, **Pickup required**, **Lost · investigate**, and **Returned · received** over generic claim labels. The extension polls the server for new pickup alerts and displays a persistent Chrome/Brave notification.
 
-The production dashboard and API use `https://tracking.cheaply.fr`. New installations prefill this address and connect through a temporary six-digit pairing code; the cloud service remains disabled until a browser is paired.
+The production dashboard and API use `https://tracking.cheaply.fr`. New installations prefill this address and connect through a temporary six-digit pairing code; the cloud service remains disabled until a browser is paired. Pairing immediately uploads up to 50 cached orders, and the existing 15-minute background alarm safely continues any remaining or previously failed uploads.
 
 The dashboard contains All, Lost, Returned, and Resolved histories, an Amazon-account filter, tracking details, claim context, a prepare-claim action, and explicit **Confirm received** resolution. Installations on other computers or browser profiles connect with a one-time six-digit code and receive separate revocable device tokens. See [`monitor-service/README.md`](monitor-service/README.md).
 

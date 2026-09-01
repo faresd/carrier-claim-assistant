@@ -117,6 +117,50 @@ test("tests a new monitor server before a browser token is paired", async () => 
   }
 });
 
+test("pairing immediately backfills cached orders and marks them synchronized", async () => {
+  const originalFetch = global.fetch;
+  const orderId = "222-3333333-4444444";
+  local.trackedOrdersByOrder = {
+    [orderId]: {
+      recordId: `merchant-one|A13V1IB3VIYZZH|${orderId}`,
+      orderId,
+      trackingNumber: "CC000000002FR",
+      sellerAccountId: "merchant-one",
+      marketplaceId: "A13V1IB3VIYZZH"
+    }
+  };
+  const requests = [];
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith("/api/pairing/claim")) {
+      return new Response(JSON.stringify({ token: "device-token", deviceId: "device-one", deviceName: "Work Brave" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const response = await send({
+      type: "PAIR_MONITOR_DEVICE",
+      serverUrl: "https://tracking.cheaply.fr",
+      code: "123456",
+      deviceName: "Work Brave"
+    });
+    assert.equal(response.ok, true);
+    assert.equal(response.uploadedOrders, 1);
+    assert.equal(local.claimSettings.cloudSyncEnabled, true);
+    assert.equal(local.claimSettings.monitorAccessToken, "device-token");
+    assert.match(local.trackedOrdersByOrder[orderId].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(requests.some((request) => request.url === "https://tracking.cheaply.fr/api/orders"));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("a revoked device token disables cloud sync without deleting local history", async () => {
   const originalFetch = global.fetch;
   local.claimSettings = {

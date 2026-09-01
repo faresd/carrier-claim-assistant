@@ -58,7 +58,10 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  scheduleMonitorAlertPolling().then(refreshMonitorAlerts).catch(() => {});
+  scheduleMonitorAlertPolling().then(() => Promise.allSettled([
+    syncPendingTrackingRecords(),
+    refreshMonitorAlerts()
+  ])).catch(() => {});
 });
 
 async function scheduleMonitorAlertPolling() {
@@ -148,17 +151,60 @@ async function saveTrackingRecord(order, result = {}, recommendation = null, out
   const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
   const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
   const resolvedOutcome = outcome || stored[CLAIM_OUTCOMES_KEY]?.[order.orderId] || null;
-  const record = trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous });
+  const record = {
+    ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
+    cloudSyncedAt: "",
+    cloudSyncError: ""
+  };
   records[order.orderId] = record;
   await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
   const config = normalizedMonitorConfig(settings);
   if (config.enabled) {
-    await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).catch(async (error) => {
-      records[order.orderId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: new Date().toISOString() };
+    const attemptedAt = new Date().toISOString();
+    await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).then(async () => {
+      records[order.orderId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
+      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+    }).catch(async (error) => {
+      records[order.orderId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
       await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
     });
   }
-  return record;
+  return records[order.orderId];
+}
+
+async function syncPendingTrackingRecords({ limit = 50 } = {}) {
+  const config = await monitorConfig();
+  if (!config.enabled) return { ok: true, skipped: true, uploaded: 0, remaining: 0 };
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
+  const pending = Object.values(records).filter((record) =>
+    record?.orderId && record?.trackingNumber && (!record.cloudSyncedAt || record.cloudSyncError)
+  );
+  let uploaded = 0;
+  let failed = 0;
+  for (const record of pending.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)))) {
+    const attemptedAt = new Date().toISOString();
+    try {
+      await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) });
+      records[record.orderId] = {
+        ...records[record.orderId],
+        cloudSyncedAt: attemptedAt,
+        cloudSyncAttemptedAt: attemptedAt,
+        cloudSyncError: ""
+      };
+      uploaded += 1;
+    } catch (error) {
+      records[record.orderId] = {
+        ...records[record.orderId],
+        cloudSyncAttemptedAt: attemptedAt,
+        cloudSyncError: error.message
+      };
+      failed += 1;
+      if (/revoked|not configured/i.test(error.message)) break;
+    }
+  }
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return { ok: failed === 0, uploaded, failed, remaining: Math.max(0, pending.length - uploaded) };
 }
 
 async function mergeRemoteTrackingRecords(remoteOrders = []) {
@@ -237,7 +283,8 @@ async function pairMonitorDevice({ serverUrl, code, deviceName }) {
   };
   await chrome.storage.local.set({ claimSettings });
   await scheduleMonitorAlertPolling();
-  return { ok: true, deviceId: payload.deviceId, deviceName: payload.deviceName };
+  const sync = await syncPendingTrackingRecords();
+  return { ok: true, deviceId: payload.deviceId, deviceName: payload.deviceName, uploadedOrders: sync.uploaded, pendingOrders: sync.remaining };
 }
 
 async function startStatusCheck(message, sender) {
@@ -759,6 +806,7 @@ chrome.notifications?.onClicked.addListener((notificationId) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === MONITOR_ALERT_ALARM) {
+    syncPendingTrackingRecords().catch(() => {});
     refreshMonitorAlerts().catch(() => {});
     return;
   }

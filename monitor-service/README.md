@@ -52,3 +52,5 @@ Protecting the Worker hostname with Cloudflare Access is recommended for the adm
 4. Open **Settings / pair browser**, enter the URL and code, then choose **Connect this browser**.
 
 The code expires after ten minutes and can be used once. Pairing accepts at most ten attempts per network address in a fifteen-minute window. The browser receives its own device token; open **Add browser** on the dashboard to review paired installations and revoke any token. No La Poste or Cloudflare credentials are copied to the computer.
+
+After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally.
