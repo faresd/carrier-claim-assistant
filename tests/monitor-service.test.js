@@ -16,6 +16,7 @@ const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
 const dashboardStyles = read("monitor-service", "admin", "styles.css");
+const dashboardHeaders = read("monitor-service", "admin", "_headers");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
 const ssoPreflight = read("monitor-service", "scripts", "verify-sso-registration.mjs");
@@ -100,6 +101,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
 });
 
 test("dashboard assets are protected by a restrictive browser security policy", () => {
+  assert.match(dashboardHeaders, /Content-Security-Policy: default-src 'self'/);
+  assert.match(dashboardHeaders, /Cache-Control: no-store/);
   assert.match(wrangler, /run_worker_first\s*=\s*true/);
   assert.match(worker, /content-security-policy/);
   assert.match(worker, /next\.set\("cache-control", "no-store"\)/);
