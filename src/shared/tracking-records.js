@@ -52,7 +52,7 @@
 
   function cleanOrder(order = {}) {
     const allowed = [
-      "sourceUrl", "orderId", "trackingNumber", "shipDate", "deliverBy", "carrier", "shippingService",
+      "sourceUrl", "orderId", "trackingNumber", "orderDate", "shipDate", "deliverBy", "carrier", "shippingService",
       "itemValue", "quantity", "recipientName", "recipientAddress1", "recipientAddress2", "recipientCity",
       "recipientPostalCode", "recipientCountry", "productName", "asin", "sku"
       , "sellerAccountId", "sellerAccountName", "marketplaceId"
@@ -181,6 +181,7 @@
       claimReference: outcome?.reference || previous?.claimReference || "",
       claimSubmittedAt: outcome?.submittedAt || previous?.claimSubmittedAt || "",
       checkedAt: result.checkedAt || previous?.checkedAt || "",
+      trackingSource: result.source || previous?.trackingSource || "",
       firstSeenAt: previous?.firstSeenAt || now,
       updatedAt: now,
       resolvedAt: previous?.resolvedAt || "",
