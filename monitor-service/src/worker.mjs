@@ -153,6 +153,17 @@ export async function upsertOrder(db, input) {
   if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || !order.trackingNumber) {
     throw new Error("A valid Amazon order ID and tracking number are required.");
   }
+  const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+  let migratedFallbackAccount = "";
+  if (!fallbackAccounts.has(order.accountId)) {
+    const fallback = await db.prepare(`SELECT record_id, account_id FROM orders
+      WHERE order_id = ? AND marketplace_id = ? AND account_id IN ('default', 'sellercentral.amazon.fr')
+      ORDER BY updated_at DESC LIMIT 1`).bind(order.orderId, order.marketplaceId).first();
+    if (fallback?.record_id && fallback.record_id !== order.recordId) {
+      order.recordId = fallback.record_id;
+      migratedFallbackAccount = fallback.account_id;
+    }
+  }
   await db.prepare(`
     INSERT INTO orders (
       record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, ship_date, deliver_by, item_value,
@@ -162,7 +173,9 @@ export async function upsertOrder(db, input) {
       pickup_notified_at, resolved_at, resolution_note, first_seen_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(record_id) DO UPDATE SET
+      account_id = excluded.account_id,
       account_name = CASE WHEN excluded.account_name != '' THEN excluded.account_name ELSE orders.account_name END,
+      marketplace_id = excluded.marketplace_id,
       tracking_number = excluded.tracking_number,
       carrier_id = CASE WHEN excluded.carrier_id != '' THEN excluded.carrier_id ELSE orders.carrier_id END,
       carrier_label = CASE WHEN excluded.carrier_label != '' THEN excluded.carrier_label ELSE orders.carrier_label END,
@@ -224,6 +237,11 @@ export async function upsertOrder(db, input) {
   await db.prepare(`INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at)
     VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, marketplace_id) DO UPDATE SET account_name = excluded.account_name, updated_at = excluded.updated_at`)
     .bind(order.accountId, order.accountName, order.marketplaceId, order.firstSeenAt, order.updatedAt).run();
+  if (migratedFallbackAccount) {
+    await db.prepare(`DELETE FROM seller_accounts WHERE account_id = ? AND marketplace_id = ?
+      AND NOT EXISTS (SELECT 1 FROM orders WHERE account_id = ? AND marketplace_id = ?)`)
+      .bind(migratedFallbackAccount, order.marketplaceId, migratedFallbackAccount, order.marketplaceId).run();
+  }
   return order;
 }
 
