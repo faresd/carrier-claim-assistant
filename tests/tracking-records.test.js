@@ -14,6 +14,17 @@ test("detects urgent sender pickup only in a return context", () => {
   }), "unknown");
 });
 
+test("lets the current delivered or lost event override older return history", () => {
+  assert.equal(records.trackingState({
+    statusText: "Votre colis a été livré.",
+    summaryText: "Votre colis est en retour à l'expéditeur."
+  }), "delivered");
+  assert.equal(records.trackingState({
+    statusText: "Votre colis ne peut plus être localisé.",
+    summaryText: "Votre colis est en retour à l'expéditeur."
+  }), "lost");
+});
+
 test("creates a multi-account record key and return badge", () => {
   const record = records.buildRecord({
     order: {

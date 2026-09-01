@@ -24,13 +24,18 @@ export function classifyTrackingState(statusText, summaryText = "") {
   const returnContext = /retour(?:ne|nee|ne)?(?:\s+|.*\s)a l'expediteur|retour expediteur|renvoye a l'expediteur|returned to sender|return to sender|retour de votre envoi/.test(all);
   const senderPickup = /mis(?:e)? a disposition de l'expediteur|disponible pour l'expediteur|expediteur.*(?:retirer|retrait|disponible)|retour.*(?:a retirer|disponible|point de retrait|bureau de poste|agence)/.test(current);
   const pickup = /(?:disponible|vous attend|a retirer|en attente de retrait|mis(?:e)? a disposition).*(?:point de retrait|bureau de poste|agence|relais|site de retrait)|(?:point de retrait|bureau de poste|agence|relais).*(?:disponible|vous attend|a retirer|retrait)/.test(current);
-  if (senderPickup || (returnContext && pickup)) return "pickup_ready";
-  if (returnContext) return "returning";
-  if (/perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/.test(all)) return "lost";
-  if (/endommage|deteriore|avarie|damaged|damage/.test(all)) return "damaged";
+  const lostPattern = /perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/;
+  const damagedPattern = /endommage|deteriore|avarie|damaged|damage/;
   const delivered = /(?:^|\b)(?:a (?:bien )?ete|est) livre\b|livraison (?:a ete )?effectuee|remis au destinataire|^livre\b|\bdelivered\b/.test(current) &&
     !/non livre|pas livre|jamais livre|impossible de livrer|n'a pas pu.*remis|n'avons pu.*remettre|echec de livraison|tentative de livraison/.test(current);
+
+  if (senderPickup || (returnContext && pickup)) return "pickup_ready";
   if (delivered) return "delivered";
+  if (lostPattern.test(current)) return "lost";
+  if (damagedPattern.test(current)) return "damaged";
+  if (returnContext) return "returning";
+  if (lostPattern.test(all)) return "lost";
+  if (damagedPattern.test(all)) return "damaged";
   if (/acheminement|en transit|in transit|pris en charge|en cours de livraison|distribution|douane|customs/.test(all)) return "in_transit";
   return "unknown";
 }

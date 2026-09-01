@@ -55,6 +55,17 @@ test("keeps return-in-transit and lost parcels in separate queues", () => {
   assert.equal(classifyTrackingState("Votre colis ne peut plus être localisé."), "lost");
 });
 
+test("lets the newest delivered or lost event override older return history", () => {
+  assert.equal(classifyTrackingState(
+    "Votre colis a été livré.",
+    "Votre colis est en retour à l'expéditeur."
+  ), "delivered");
+  assert.equal(classifyTrackingState(
+    "Votre colis ne peut plus être localisé.",
+    "Votre colis est en retour à l'expéditeur."
+  ), "lost");
+});
+
 test("normalizes a Suivi v2 event history", () => {
   const result = normalizeCarrierPayload({ shipment: { event: [
     { date: "2026-08-30T08:00:00Z", label: "Votre colis est en retour à l'expéditeur", code: "RETOUR" },
@@ -63,6 +74,15 @@ test("normalizes a Suivi v2 event history", () => {
   assert.equal(result.trackingState, "pickup_ready");
   assert.match(result.statusText, /disponible/i);
   assert.match(result.statusSummary, /retour/i);
+});
+
+test("normalizes a delivered latest event even when older history records a return", () => {
+  const result = normalizeCarrierPayload({ shipment: { event: [
+    { date: "2026-08-30T08:00:00Z", label: "Votre colis est en retour à l'expéditeur", code: "RETOUR" },
+    { date: "2026-09-01T06:30:00Z", label: "Votre colis a été livré.", code: "LIVRE" }
+  ] } });
+  assert.equal(result.trackingState, "delivered");
+  assert.match(result.statusText, /livr/i);
 });
 
 test("runs only during the seven o'clock Paris hour", () => {
