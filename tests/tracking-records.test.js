@@ -37,11 +37,12 @@ test("creates a multi-account record key and return badge", () => {
       sellerAccountId: "merchant-a",
       marketplaceId: "amazon-fr"
     },
-    result: { statusText: "Retour à l'expéditeur" },
+    result: { statusText: "Retour à l'expéditeur", source: "carrier-page-laposte" },
     recommendation: { carrier: { id: "laposte", label: "Colissimo" }, reason: "returned", recommended: true }
   });
   assert.equal(record.recordId, "merchant-a|amazon-fr|111-2222222-3333333");
   assert.equal(record.trackingState, "returning");
+  assert.equal(record.trackingSource, "carrier-page-laposte");
   assert.deepEqual(records.badgeForRecord(record), { state: "returned", label: "Returning to sender", actionable: true });
 });
 
