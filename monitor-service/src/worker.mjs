@@ -399,6 +399,10 @@ async function sendMonitorJobs(env, jobs, runDate) {
     await env.TRACKING_QUEUE.sendBatch(chunk.map((job) => ({
       body: { runDate, recordId: job.record_id || job.recordId }
     })));
+    const dispatchedAt = new Date().toISOString();
+    await env.DB.batch(chunk.map((job) => env.DB.prepare(`UPDATE monitor_jobs SET status = 'dispatched', updated_at = ?
+      WHERE run_date = ? AND record_id = ? AND status = 'queued'`)
+      .bind(dispatchedAt, runDate, job.record_id || job.recordId)));
   }
 }
 
@@ -479,7 +483,7 @@ export async function processTrackingMessage(message, env, { fetchImpl = fetch }
     message.ack();
   } catch (error) {
     if (attempt < 4) {
-      await env.DB.prepare("UPDATE monitor_jobs SET last_error = ?, updated_at = ? WHERE run_date = ? AND record_id = ?")
+      await env.DB.prepare("UPDATE monitor_jobs SET status = 'retrying', last_error = ?, updated_at = ? WHERE run_date = ? AND record_id = ?")
         .bind(clean(error.message, 500), new Date().toISOString(), runDate, recordId).run();
       message.retry({ delaySeconds: 600 });
       return;
