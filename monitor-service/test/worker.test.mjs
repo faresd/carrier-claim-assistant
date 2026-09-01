@@ -466,11 +466,21 @@ test("moves an early fallback record into the discovered Amazon seller account w
     trackingState: "pickup_ready",
     checkedAt: "2026-09-02T07:00:00.000Z"
   });
+  const repeated = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
+    sellerAccountName: "Cheaply France",
+    marketplaceId,
+    trackingState: "pickup_ready",
+    checkedAt: "2026-09-03T07:00:00.000Z"
+  });
 
   const rows = database.prepare("SELECT record_id, account_id, account_name, tracking_state FROM orders").all();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].record_id, initial.recordId);
   assert.equal(enriched.recordId, initial.recordId);
+  assert.equal(repeated.recordId, initial.recordId);
   assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
   assert.equal(rows[0].account_name, "Cheaply France");
   assert.equal(rows[0].tracking_state, "pickup_ready");
@@ -478,6 +488,40 @@ test("moves an early fallback record into the discovered Amazon seller account w
     database.prepare("SELECT account_id FROM seller_accounts ORDER BY account_id").all().map((row) => row.account_id),
     ["amzn1.merchant.o.A19A98AEOKAGHS"]
   );
+});
+
+test("keeps a complete claim package when another browser uploads blank sender fields", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-claim-package",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    claimPayload: {
+      details: "Initial claim message",
+      sender: { email: "claims@example.com", phone: "+33102030405", address1: "1 rue de Paris", city: "Paris" },
+      order: { sku: "SKU-1", quantity: "1" }
+    }
+  });
+  await upsertOrder(db, {
+    ...identity,
+    claimPayload: {
+      details: "Updated claim message",
+      sender: { email: "", phone: "", address1: "", city: "" },
+      order: { sku: "", quantity: "2" }
+    }
+  });
+
+  const payload = JSON.parse(database.prepare("SELECT claim_payload FROM orders").get().claim_payload);
+  assert.equal(payload.details, "Updated claim message");
+  assert.equal(payload.sender.email, "claims@example.com");
+  assert.equal(payload.sender.address1, "1 rue de Paris");
+  assert.equal(payload.order.sku, "SKU-1");
+  assert.equal(payload.order.quantity, "2");
 });
 
 test("stores only a matching Amazon Seller Central order URL", async (context) => {

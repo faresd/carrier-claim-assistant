@@ -65,6 +65,31 @@ function claimPayloadJson(input) {
   return serialized.length <= 30000 ? serialized : "{}";
 }
 
+function parsedJsonObject(value) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function mergeClaimValue(previous, incoming) {
+  if (incoming == null || incoming === "") return previous;
+  if (Array.isArray(incoming)) return incoming.length ? incoming : previous;
+  if (typeof incoming !== "object") return incoming;
+  const before = previous && typeof previous === "object" && !Array.isArray(previous) ? previous : {};
+  return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(incoming)])]
+    .map((key) => [key, mergeClaimValue(before[key], incoming[key])])
+    .filter(([, value]) => value !== undefined));
+}
+
+function mergeClaimPayloadJson(previous, incoming) {
+  const merged = sanitizeJson(mergeClaimValue(parsedJsonObject(previous), parsedJsonObject(incoming)));
+  const serialized = JSON.stringify(merged || {});
+  return serialized.length <= 30000 ? serialized : String(previous || "{}");
+}
+
 function safeAmazonOrderUrl(value, orderId) {
   try {
     const url = new URL(clean(value, 1000), "https://sellercentral.amazon.fr");
@@ -177,7 +202,12 @@ export async function upsertOrder(db, input) {
   }
   const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
   let migratedFallbackAccount = "";
-  if (!fallbackAccounts.has(order.accountId)) {
+  const existingAccountOrder = await db.prepare(`SELECT record_id, account_id FROM orders
+    WHERE order_id = ? AND marketplace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 1`)
+    .bind(order.orderId, order.marketplaceId, order.accountId).first();
+  if (existingAccountOrder?.record_id) {
+    order.recordId = existingAccountOrder.record_id;
+  } else if (!fallbackAccounts.has(order.accountId)) {
     const fallback = await db.prepare(`SELECT record_id, account_id FROM orders
       WHERE order_id = ? AND marketplace_id = ? AND account_id IN ('default', 'sellercentral.amazon.fr')
       ORDER BY updated_at DESC LIMIT 1`).bind(order.orderId, order.marketplaceId).first();
@@ -186,6 +216,8 @@ export async function upsertOrder(db, input) {
       migratedFallbackAccount = fallback.account_id;
     }
   }
+  const existingPayload = await db.prepare("SELECT claim_payload FROM orders WHERE record_id = ?").bind(order.recordId).first();
+  order.claimPayload = mergeClaimPayloadJson(existingPayload?.claim_payload, order.claimPayload);
   await db.prepare(`
     INSERT INTO orders (
       record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, ship_date, deliver_by, item_value,
