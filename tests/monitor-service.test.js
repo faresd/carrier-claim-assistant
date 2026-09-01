@@ -14,6 +14,7 @@ const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
+const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
   assert.match(wrangler, /crons\s*=\s*\["\*\/15 \* \* \* \*"\]/);
@@ -100,4 +101,16 @@ test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", 
   assert.match(deployment, /vars\.CF_D1_DATABASE_ID/);
   assert.doesNotMatch(deployment, /MONITOR_ADMIN_TOKEN/);
   assert.doesNotMatch(deployment, /MONITOR_SYNC_TOKEN/);
+});
+
+test("monitor deployment fails before mutation when required production configuration is missing", () => {
+  const validationIndex = deployment.indexOf("Validate deployment configuration");
+  const migrationIndex = deployment.indexOf("Apply database migrations");
+  assert.ok(validationIndex > 0 && validationIndex < migrationIndex);
+  for (const name of ["CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN", "LAPOSTE_OKAPI_KEY", "MONITOR_SESSION_SECRET", "MONITOR_TRACKING_CLIENT_SECRET"]) {
+    assert.match(deployment, new RegExp(name));
+    assert.match(deploymentValidator, new RegExp(name));
+  }
+  assert.match(deploymentValidator, /Use different values/);
+  assert.doesNotMatch(deploymentValidator, /console\.(?:log|error)\([^\n]*(?:apiToken|okapiKey|sessionSecret|trackingSecret)/);
 });
