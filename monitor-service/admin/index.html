@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Carrier Return Monitor</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">Carrier Claim Assistant</span>
+          <h1>Return recovery</h1>
+          <p>Find returned parcels before their pickup window expires.</p>
+        </div>
+        <div class="topbar__actions">
+          <span id="last-sync" class="last-sync">Not connected</span>
+          <button id="add-browser" class="button button--secondary" type="button">Add browser</button>
+          <button id="refresh" class="button button--secondary" type="button">Refresh</button>
+          <button id="run-monitor" class="button" type="button">Run checks now</button>
+        </div>
+      </header>
+
+      <section id="auth-card" class="auth-card">
+        <div>
+          <strong>Connect this dashboard</strong>
+          <p>Enter the admin token configured as the Worker secret. It stays in this browser tab only.</p>
+        </div>
+        <form id="auth-form">
+          <label>Admin token <input id="admin-token" type="password" autocomplete="off" required></label>
+          <button class="button" type="submit">Connect</button>
+        </form>
+      </section>
+
+      <section id="urgent-card" class="urgent-card" hidden>
+        <div class="urgent-card__icon" aria-hidden="true">!</div>
+        <div>
+          <span>Pickup action required</span>
+          <strong id="urgent-copy"></strong>
+        </div>
+        <button id="show-pickups" class="button button--urgent" type="button">Show returned parcels</button>
+      </section>
+
+      <section class="metrics" aria-label="Tracking overview">
+        <article><span>Pickup required</span><strong id="metric-pickup">—</strong><small>returned and waiting</small></article>
+        <article><span>Returning</span><strong id="metric-returning">—</strong><small>on the way back</small></article>
+        <article><span>Lost / investigate</span><strong id="metric-lost">—</strong><small>claim candidates</small></article>
+        <article><span>Resolved</span><strong id="metric-resolved">—</strong><small>received back</small></article>
+      </section>
+
+      <main class="workspace">
+        <div class="workspace__header">
+          <nav class="tabs" aria-label="Order history">
+            <button class="tab is-active" data-view="all" type="button">All <span id="count-all">0</span></button>
+            <button class="tab" data-view="lost" type="button">Lost <span id="count-lost">0</span></button>
+            <button class="tab" data-view="returned" type="button">Returned <span id="count-returned">0</span></button>
+            <button class="tab" data-view="resolved" type="button">Resolved <span id="count-resolved">0</span></button>
+          </nav>
+          <div class="workspace__filters">
+            <label class="account-filter"><span>Seller account</span><select id="account-filter"><option value="">All accounts</option></select></label>
+            <label class="search"><span>Search</span><input id="search" type="search" placeholder="Order, tracking, recipient"></label>
+          </div>
+        </div>
+
+        <div id="loading" class="empty-state">Connect to load tracked orders.</div>
+        <div class="table-wrap" hidden>
+          <table>
+            <thead>
+              <tr><th>Order</th><th>Tracking</th><th>Current state</th><th>Last carrier event</th><th>Claim</th><th class="align-right">Actions</th></tr>
+            </thead>
+            <tbody id="orders-body"></tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="detail-dialog">
+      <form method="dialog" class="dialog-card">
+        <header><div><span class="eyebrow">Tracked order</span><h2 id="detail-title"></h2></div><button class="icon-button" aria-label="Close">×</button></header>
+        <div id="detail-content"></div>
+        <footer><button class="button button--secondary" value="cancel">Close</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="pairing-dialog">
+      <form method="dialog" class="dialog-card pairing-card">
+        <header><div><span class="eyebrow">Connect another computer</span><h2>Browser pairing code</h2></div><button class="icon-button" aria-label="Close">×</button></header>
+        <div class="pairing-content">
+          <p>Install Carrier Claim Assistant, open its settings, enter this server address and the temporary code.</p>
+          <code id="pairing-code">------</code>
+          <small id="pairing-expiry"></small>
+          <section class="device-section">
+            <h3>Connected browsers</h3>
+            <div id="device-list">Loading…</div>
+          </section>
+        </div>
+        <footer><button class="button button--secondary" value="cancel">Done</button></footer>
+      </form>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
