@@ -48,6 +48,8 @@ const DEFAULT_CLAIM_SETTINGS = {
 
 const STATUS_TIMEOUT_MS = 60000;
 const ORDER_AUDIT_LOAD_TIMEOUT_MS = 30000;
+const SELLER_NOTE_RETRY_ATTEMPTS = 24;
+const SELLER_NOTE_RETRY_DELAY_MS = 750;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   const stored = await chrome.storage.local.get([
@@ -661,6 +663,40 @@ async function clearPendingClaim(carrier) {
   return { ok: true };
 }
 
+function sellerNoteOrderUrl(order = {}, outcome = {}) {
+  const orderId = String(order.orderId || outcome.orderId || "").trim();
+  if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(orderId) || !order.sourceUrl) return "";
+  try {
+    const url = new URL(String(order.sourceUrl));
+    if (url.origin !== "https://sellercentral.amazon.fr" || url.pathname !== `/orders-v3/order/${orderId}`) return "";
+    url.hash = `carrier-claim-seller-note=${encodeURIComponent(outcome.id || orderId)}`;
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function saveSellerNoteInBackground(claim, outcome) {
+  const url = sellerNoteOrderUrl(claim.order, outcome);
+  if (!url) return null;
+  const tab = await chrome.tabs.create({ active: false, url });
+  try {
+    for (let attempt = 0; attempt < SELLER_NOTE_RETRY_ATTEMPTS; attempt += 1) {
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: "CLAIM_SUBMISSION_SUCCESS",
+        outcome
+      }).catch(() => null);
+      if (response?.noteSaved) return response;
+      if (attempt + 1 < SELLER_NOTE_RETRY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, SELLER_NOTE_RETRY_DELAY_MS));
+      }
+    }
+    return null;
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
 async function handleClaimWorkflowState(message, sender) {
   const key = pendingClaimKey(message.carrier);
   if (!key) return { ok: false, error: "Unsupported carrier claim." };
@@ -737,6 +773,9 @@ async function handleClaimSubmissionSuccess(message, sender) {
       type: "CLAIM_SUBMISSION_SUCCESS",
       outcome
     }).catch(() => null);
+  }
+  if (!amazonResponse) {
+    amazonResponse = await saveSellerNoteInBackground(claim, outcome);
   }
   return { ok: true, outcome, noteSaved: Boolean(amazonResponse?.noteSaved) };
 }

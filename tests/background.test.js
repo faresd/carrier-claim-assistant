@@ -13,6 +13,7 @@ const updatedTabs = [];
 const alarms = new Map();
 const notifications = [];
 let nextTabId = 100;
+let sendMessageHandler = null;
 
 function storageArea(target) {
   return {
@@ -49,6 +50,8 @@ global.chrome = {
     },
     async sendMessage(tabId, message) {
       sentMessages.push({ tabId, message });
+      if (sendMessageHandler) return sendMessageHandler(tabId, message);
+      if (message?.type === "CLAIM_SUBMISSION_SUCCESS") return { ok: true, noteSaved: false };
     },
     async remove(tabId) {
       removedTabs.push(tabId);
@@ -508,6 +511,96 @@ test("uploads the successful claim reference and sent state to the return monito
   } finally {
     global.fetch = originalFetch;
     local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false, monitorAccessToken: "" };
+  }
+});
+
+test("a dashboard-started claim writes Seller Notes through a bounded inactive Amazon tab", async () => {
+  const tabsBefore = createdTabs.length;
+  const removedBefore = removedTabs.length;
+  const sourceUrl = "https://sellercentral.amazon.fr/orders-v3/order/408-9133278-8011502?mons_sel_mcid=merchant-dashboard";
+  const claim = {
+    id: "claim-dashboard-note-1",
+    carrier: "laposte",
+    reason: "returned",
+    submissionStartedAt: "2026-09-01T11:00:00.000Z",
+    order: {
+      sourceUrl,
+      orderId: "408-9133278-8011502",
+      trackingNumber: "CC105961572FR",
+      sellerAccountId: "merchant-dashboard",
+      marketplaceId: "A13V1IB3VIYZZH"
+    },
+    executionMode: "automatic",
+    sourceTabId: null
+  };
+  session.pendingLaPosteClaim = claim;
+  sendMessageHandler = async (tabId, message) => {
+    if (message?.type !== "CLAIM_SUBMISSION_SUCCESS") return undefined;
+    assert.equal(tabId, createdTabs.at(-1).id);
+    assert.equal(message.outcome.orderId, claim.order.orderId);
+    return { ok: true, noteSaved: true };
+  };
+
+  try {
+    const response = await send({
+      type: "CLAIM_SUBMISSION_SUCCESS",
+      carrier: "laposte",
+      claimId: claim.id,
+      reference: "COL-91855121",
+      confirmationText: "Message envoyé !"
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.noteSaved, true);
+    assert.equal(createdTabs.length, tabsBefore + 1);
+    const noteTab = createdTabs.at(-1);
+    assert.equal(noteTab.active, false);
+    assert.match(noteTab.url, /^https:\/\/sellercentral\.amazon\.fr\/orders-v3\/order\/408-9133278-8011502\?mons_sel_mcid=merchant-dashboard#/);
+    assert.match(noteTab.url, /carrier-claim-seller-note=claim-dashboard-note-1/);
+    assert.equal(removedTabs.length, removedBefore + 1);
+    assert.equal(removedTabs.at(-1), noteTab.id);
+  } finally {
+    sendMessageHandler = null;
+  }
+});
+
+test("a closed original Amazon tab falls back to the saved order URL for Seller Notes", async () => {
+  const tabsBefore = createdTabs.length;
+  const claim = {
+    id: "claim-closed-source-note-1",
+    carrier: "chronopost",
+    reason: "lost",
+    submissionStartedAt: "2026-09-01T12:00:00.000Z",
+    order: {
+      sourceUrl: "https://sellercentral.amazon.fr/orders-v3/order/305-6121206-6903513?mons_sel_mcid=merchant-cloud",
+      orderId: "305-6121206-6903513",
+      trackingNumber: "XY123456789FR",
+      sellerAccountId: "merchant-cloud",
+      marketplaceId: "A13V1IB3VIYZZH"
+    },
+    sourceTabId: 901
+  };
+  session.pendingChronopostClaim = claim;
+  sendMessageHandler = async (tabId, message) => {
+    if (tabId === 901) throw new Error("The tab was closed");
+    if (message?.type === "CLAIM_SUBMISSION_SUCCESS") return { ok: true, noteSaved: true };
+    return undefined;
+  };
+
+  try {
+    const response = await send({
+      type: "CLAIM_SUBMISSION_SUCCESS",
+      carrier: "chronopost",
+      claimId: claim.id,
+      reference: "CHR-2026-901",
+      confirmationText: "Votre demande a bien été transmise."
+    });
+    assert.equal(response.noteSaved, true);
+    assert.equal(createdTabs.length, tabsBefore + 1);
+    assert.equal(createdTabs.at(-1).active, false);
+    assert.ok(removedTabs.includes(createdTabs.at(-1).id));
+  } finally {
+    sendMessageHandler = null;
   }
 });
 
