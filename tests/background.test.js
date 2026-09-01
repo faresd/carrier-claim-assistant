@@ -11,6 +11,7 @@ const sentMessages = [];
 const removedTabs = [];
 const updatedTabs = [];
 const alarms = new Map();
+const notifications = [];
 let nextTabId = 100;
 
 function storageArea(target) {
@@ -31,7 +32,9 @@ function storageArea(target) {
 global.chrome = {
   runtime: {
     onInstalled: { addListener(listener) { listeners.installed = listener; } },
+    onStartup: { addListener(listener) { listeners.startup = listener; } },
     onMessage: { addListener(listener) { listeners.message = listener; } },
+    getURL(path) { return `chrome-extension://test/${path}`; },
     async openOptionsPage() {}
   },
   storage: {
@@ -60,11 +63,16 @@ global.chrome = {
     async create(name, options) { alarms.set(name, options); },
     async clear(name) { return alarms.delete(name); },
     onAlarm: { addListener(listener) { listeners.alarm = listener; } }
+  },
+  notifications: {
+    async create(id, options) { notifications.push({ id, options }); },
+    onClicked: { addListener(listener) { listeners.notificationClicked = listener; } }
   }
 };
 
 require("../src/shared/carrier-rules.js");
 require("../src/shared/claim-outcome.js");
+require("../src/shared/tracking-records.js");
 require("../src/background.js");
 
 function send(message, sender = {}) {
@@ -84,6 +92,121 @@ test("merges new defaults without overwriting existing sender settings", async (
   assert.equal(local.senderProfile.contactTitle, "Monsieur");
   assert.equal(local.claimSettings.autoStatusCheck, false);
   assert.equal(local.claimSettings.chronopostStaleHours, 48);
+  assert.equal(local.claimSettings.cloudSyncEnabled, false);
+  assert.equal(local.claimSettings.monitorServerUrl, "https://tracking.cheaply.fr");
+  assert.ok(alarms.has("carrierReturnMonitorAlerts"));
+});
+
+test("tests a new monitor server before a browser token is paired", async () => {
+  const originalFetch = global.fetch;
+  let request = null;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ ok: true, service: "carrier-return-monitor" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const response = await send({ type: "TEST_MONITOR_CONNECTION", serverUrl: "https://monitor.example", token: "" });
+    assert.deepEqual(response, { ok: true });
+    assert.equal(request.url, "https://monitor.example/api/health");
+    assert.equal(request.options.headers.authorization, undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("stores a claim-ready order package with sender, recipient, item, and carrier context", async () => {
+  local.senderProfile = {
+    email: "seller@example.com", phone: "+33102030405", contactFirstName: "Camille", contactLastName: "Martin",
+    companyName: "Example SARL", address1: "1 rue de Paris", postalCode: "75001", city: "Paris", country: "France"
+  };
+  local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false };
+  const response = await send({
+    type: "REGISTER_TRACKED_ORDER",
+    order: {
+      orderId: "333-4444444-5555555", trackingNumber: "CC000000003FR", carrier: "Colissimo",
+      productName: "Replacement part", asin: "B000TEST", sku: "SKU-1", quantity: "2", itemValue: "€49.90",
+      recipientName: "Monsieur Jean Dupont", recipientAddress1: "2 rue de Lyon", recipientPostalCode: "69001",
+      recipientCity: "Lyon", recipientCountry: "France", sellerAccountId: "merchant-one", marketplaceId: "A13V1IB3VIYZZH"
+    },
+    result: { statusText: "Colis introuvable", checkedAt: "2026-09-01T07:00:00.000Z" }
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.record.claimPayload.sender.email, "seller@example.com");
+  assert.equal(response.record.claimPayload.order.asin, "B000TEST");
+  assert.equal(response.record.claimPayload.order.recipientCity, "Lyon");
+  assert.equal(response.record.claimPayload.carrier, "laposte");
+  assert.match(response.record.claimPayload.details, /CC000000003FR/);
+});
+
+test("pairing immediately backfills cached orders and marks them synchronized", async () => {
+  const originalFetch = global.fetch;
+  const orderId = "222-3333333-4444444";
+  local.trackedOrdersByOrder = {
+    [orderId]: {
+      recordId: `merchant-one|A13V1IB3VIYZZH|${orderId}`,
+      orderId,
+      trackingNumber: "CC000000002FR",
+      sellerAccountId: "merchant-one",
+      marketplaceId: "A13V1IB3VIYZZH"
+    }
+  };
+  const requests = [];
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith("/api/pairing/claim")) {
+      return new Response(JSON.stringify({ token: "device-token", deviceId: "device-one", deviceName: "Work Brave" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const response = await send({
+      type: "PAIR_MONITOR_DEVICE",
+      serverUrl: "https://tracking.cheaply.fr",
+      code: "123456",
+      deviceName: "Work Brave"
+    });
+    assert.equal(response.ok, true);
+    assert.equal(response.uploadedOrders, 1);
+    assert.equal(local.claimSettings.cloudSyncEnabled, true);
+    assert.equal(local.claimSettings.monitorAccessToken, "device-token");
+    assert.match(local.trackedOrdersByOrder[orderId].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(requests.some((request) => request.url === "https://tracking.cheaply.fr/api/orders"));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("a revoked device token disables cloud sync without deleting local history", async () => {
+  const originalFetch = global.fetch;
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://monitor.example",
+    monitorAccessToken: "revoked-token"
+  };
+  local.trackedOrdersByOrder = { "111-2222222-3333333": { orderId: "111-2222222-3333333", trackingState: "returning" } };
+  global.fetch = async () => new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" }
+  });
+  try {
+    const response = await send({ type: "GET_TRACKED_RECORDS", refresh: true });
+    assert.equal(response.ok, true);
+    assert.equal(response.records["111-2222222-3333333"].trackingState, "returning");
+    assert.equal(local.claimSettings.cloudSyncEnabled, false);
+    assert.equal(local.claimSettings.monitorAccessToken, "");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("starts a private La Poste tracking check and arms cleanup", async () => {
@@ -217,8 +340,37 @@ test("stores a successful claim, notifies Amazon, and clears the pending submiss
   assert.equal(outcome.reference, "LP-8472619");
   assert.equal(outcome.trackingNumber, "CC000000002FR");
   assert.match(outcome.sellerNote, /Référence : LP-8472619/);
+  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimStatus, "sent");
+  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimReference, "LP-8472619");
   assert.equal(sentMessages.at(-1).tabId, 55);
   assert.equal(sentMessages.at(-1).message.type, "CLAIM_SUBMISSION_SUCCESS");
+});
+
+test("recovers a referenced La Poste confirmation when the final carrier button was clicked directly", async () => {
+  const claim = {
+    id: "claim-recovery-1",
+    carrier: "laposte",
+    reason: "lost",
+    order: { orderId: "402-2797047-3010738", trackingNumber: "8U02230078613" },
+    executionMode: "automatic"
+  };
+  await send({ type: "OPEN_CARRIER_CLAIM", claim }, { tab: { id: 56 } });
+
+  const response = await send({
+    type: "CLAIM_SUBMISSION_SUCCESS",
+    carrier: "laposte",
+    claimId: claim.id,
+    reference: "COL-91855121",
+    confirmationText: "Message envoyé !",
+    recoveredFromCarrierConfirmation: true
+  }, {
+    url: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis/success",
+    tab: { id: 156 }
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(local.claimOutcomesByOrder[claim.order.orderId].reference, "COL-91855121");
+  assert.equal(session.pendingLaPosteClaim, undefined);
 });
 
 test("audits a page sequentially through one reusable inactive worker tab", async () => {
