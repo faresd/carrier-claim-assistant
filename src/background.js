@@ -143,9 +143,58 @@ async function testMonitorConnection(serverUrl, token = "") {
   }
 }
 
+function buildClaimPayload(order, record, senderProfile, recommendation, result = {}) {
+  const reason = recommendation?.reason === "none" ? "other" : recommendation?.reason || record.claimReason || "other";
+  const recipientTitle = carrierRules.detectRecipientTitle(order.recipientName) || "";
+  return {
+    version: 1,
+    carrier: record.carrierId,
+    reason,
+    reasonContract: carrierRules.carrierReasonContract(record.carrierId, reason),
+    details: carrierRules.buildClaimMessage(order, { ...recommendation, reason }).slice(0, 500),
+    recommendation: {
+      recommended: Boolean(recommendation?.recommended),
+      reason,
+      title: recommendation?.title || record.claimTitle || "",
+      statusText: recommendation?.statusText || record.statusText || ""
+    },
+    trackingStatus: {
+      statusText: result.statusText || record.statusText || "",
+      summaryText: result.summaryText || record.statusSummary || "",
+      checkedAt: result.checkedAt || record.checkedAt || ""
+    },
+    order: {
+      sourceUrl: order.sourceUrl || "",
+      orderId: order.orderId || "",
+      trackingNumber: order.trackingNumber || "",
+      shipDate: order.shipDate || "",
+      deliverBy: order.deliverBy || "",
+      carrier: order.carrier || record.carrierLabel || "",
+      shippingService: order.shippingService || "",
+      itemValue: order.itemValue || "",
+      quantity: order.quantity || "1",
+      productName: order.productName || "",
+      asin: order.asin || "",
+      sku: order.sku || "",
+      recipientName: order.recipientName || "",
+      recipientAddress1: order.recipientAddress1 || "",
+      recipientAddress2: order.recipientAddress2 || "",
+      recipientCity: order.recipientCity || "",
+      recipientPostalCode: order.recipientPostalCode || "",
+      recipientCountry: order.recipientCountry || "",
+      sellerAccountId: record.sellerAccountId || "",
+      sellerAccountName: record.sellerAccountName || "",
+      marketplaceId: record.marketplaceId || ""
+    },
+    sender: { ...DEFAULT_SENDER_PROFILE, ...(senderProfile || {}) },
+    recipientTitle,
+    executionMode: "automatic"
+  };
+}
+
 async function saveTrackingRecord(order, result = {}, recommendation = null, outcome = null) {
   if (!order?.orderId || !order?.trackingNumber || !trackingRecords) return null;
-  const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", CLAIM_OUTCOMES_KEY]);
+  const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", "senderProfile", CLAIM_OUTCOMES_KEY]);
   const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
   const previous = records[order.orderId] || null;
   const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
@@ -156,6 +205,7 @@ async function saveTrackingRecord(order, result = {}, recommendation = null, out
     cloudSyncedAt: "",
     cloudSyncError: ""
   };
+  record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
   records[order.orderId] = record;
   await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
   const config = normalizedMonitorConfig(settings);
@@ -285,6 +335,19 @@ async function pairMonitorDevice({ serverUrl, code, deviceName }) {
   await scheduleMonitorAlertPolling();
   const sync = await syncPendingTrackingRecords();
   return { ok: true, deviceId: payload.deviceId, deviceName: payload.deviceName, uploadedOrders: sync.uploaded, pendingOrders: sync.remaining };
+}
+
+async function redeemCloudClaimLaunch(token) {
+  const cleanToken = String(token || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 160);
+  if (!cleanToken) throw new Error("The cloud claim link is missing or invalid.");
+  const payload = await monitorRequest("/api/claim-launch/redeem", {
+    method: "POST",
+    body: JSON.stringify({ token: cleanToken })
+  });
+  const claim = payload.claim;
+  if (!claim || !["laposte", "chronopost"].includes(claim.carrier)) throw new Error("The cloud claim package is invalid.");
+  await updatePendingClaim(claim.carrier, claim);
+  return { ok: true, claim };
 }
 
 async function startStatusCheck(message, sender) {
@@ -665,6 +728,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "TEST_MONITOR_CONNECTION") {
     testMonitorConnection(message.serverUrl, message.token)
       .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "REDEEM_CLOUD_CLAIM") {
+    redeemCloudClaimLaunch(message.token)
+      .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

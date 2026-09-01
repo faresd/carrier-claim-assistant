@@ -372,16 +372,19 @@
   }
 
   async function finishSuccessfulSubmission() {
-    if (!state.claim?.submissionStartedAt) return false;
+    if (!state.claim) return false;
     const success = outcomeRules.detectClaimSuccess("laposte", document.body.innerText);
     if (!success) return false;
+    const recoveredFromCarrierConfirmation = !state.claim.submissionStartedAt;
+    if (recoveredFromCarrierConfirmation && !success.reference) return false;
     if (state.successReported) return true;
     const response = await chrome.runtime.sendMessage({
       type: "CLAIM_SUBMISSION_SUCCESS",
       carrier: "laposte",
       claimId: state.claim.id,
       reference: success.reference,
-      confirmationText: success.confirmationText
+      confirmationText: success.confirmationText,
+      recoveredFromCarrierConfirmation
     });
     if (!response?.ok) {
       updatePanel(`La Poste confirmed submission, but Amazon could not be updated: ${response?.error || "Unknown error"}`);
@@ -395,10 +398,11 @@
   }
 
   async function advance() {
-    if (!state.claim || state.working || state.paused) return;
+    if (!state.claim || state.working) return;
     state.working = true;
     try {
       if (await finishSuccessfulSubmission()) return;
+      if (state.paused) return;
       const filled = fillVisibleFields();
       const moved = chooseGenericStep();
       const progress = document.querySelector("[role='progressbar']")?.innerText || "";
@@ -511,7 +515,16 @@
     });
   }
 
-  chrome.runtime.sendMessage({ type: "GET_PENDING_CLAIM", carrier: "laposte" }).then((response) => {
+  async function loadPendingClaim() {
+    const launchToken = new URLSearchParams(location.hash.slice(1)).get("carrier-claim-launch");
+    if (!launchToken) return chrome.runtime.sendMessage({ type: "GET_PENDING_CLAIM", carrier: "laposte" });
+    const response = await chrome.runtime.sendMessage({ type: "REDEEM_CLOUD_CLAIM", token: launchToken });
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    if (!response?.ok) window.alert(`Could not load the dashboard claim: ${response?.error || "Pair this browser with the return monitor first."}`);
+    return response;
+  }
+
+  loadPendingClaim().then((response) => {
     const pendingLaPosteClaim = response?.claim;
     if (!pendingLaPosteClaim) return;
     state.claim = pendingLaPosteClaim;
