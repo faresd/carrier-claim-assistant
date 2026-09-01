@@ -378,7 +378,7 @@ export async function enqueueDailyMonitor(env, date = new Date()) {
     return { skipped: false, resumed: true, runDate, queuedCount: pending.length };
   }
   const startedAt = date.toISOString();
-  const rows = (await env.DB.prepare("SELECT * FROM orders WHERE tracking_state NOT IN ('delivered', 'resolved') ORDER BY checked_at ASC LIMIT 1000").all()).results || [];
+  const rows = (await env.DB.prepare("SELECT record_id FROM orders WHERE tracking_state NOT IN ('delivered', 'resolved') ORDER BY checked_at ASC").all()).results || [];
   await env.DB.prepare("INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count) VALUES (?, ?, ?, ?)")
     .bind(runDate, startedAt, rows.length ? "" : startedAt, rows.length).run();
   for (let index = 0; index < rows.length; index += 100) {
@@ -396,16 +396,17 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
   const failed = Boolean(error);
   const statements = [];
   if (row && result) {
-    const state = row.tracking_state === "resolved" ? "resolved" : result.trackingState;
+    const state = row.tracking_state === "resolved"
+      ? "resolved"
+      : result.trackingState === "unknown" && row.tracking_state !== "unknown"
+        ? row.tracking_state
+        : result.trackingState;
     statements.push(
       env.DB.prepare(`UPDATE orders SET tracking_state = ?, status_text = ?, status_summary = ?, checked_at = ?, updated_at = ? WHERE record_id = ?`)
         .bind(state, result.statusText, result.statusSummary, now, now, row.record_id),
       env.DB.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code) VALUES (?, ?, ?, ?, ?, ?)`)
         .bind(row.record_id, state, result.statusText, result.eventAt, now, result.rawCode)
     );
-  } else if (failed && row) {
-    statements.push(env.DB.prepare("UPDATE orders SET status_text = ?, updated_at = ? WHERE record_id = ?")
-      .bind(`Daily check failed: ${clean(error, 300)}`, now, row.record_id));
   }
   statements.push(
     env.DB.prepare("UPDATE monitor_jobs SET status = ?, last_error = ?, updated_at = ? WHERE run_date = ? AND record_id = ?")

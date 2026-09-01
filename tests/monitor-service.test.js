@@ -24,6 +24,8 @@ test("monitor deployment schedules a DST-safe morning queue with bounded carrier
   assert.match(worker, /return parisDateParts\(date\)\.hour === "07"/);
   assert.match(worker, /async queue\(batch, env\)/);
   assert.match(worker, /delaySeconds:\s*600/);
+  assert.match(worker, /SELECT record_id FROM orders WHERE tracking_state NOT IN \('delivered', 'resolved'\) ORDER BY checked_at ASC/);
+  assert.doesNotMatch(worker, /tracking_state NOT IN \('delivered', 'resolved'\).*LIMIT 1000/);
 });
 
 test("monitor schema keeps multi-account history, idempotent jobs, devices, claim launches, and notification receipts", () => {

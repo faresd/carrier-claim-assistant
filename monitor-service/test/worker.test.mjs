@@ -298,6 +298,66 @@ test("runs one idempotent morning queue through Suivi v2 and stores pickup and d
   assert.equal(queued.length, 2);
 });
 
+test("keeps a known pickup state through ambiguous tracking and preserves carrier evidence on API failure", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: { async sendBatch(messages) { queued.push(...messages); } }
+  };
+  await upsertOrder(db, {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-resilient",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "pickup_ready",
+    statusText: "Votre envoi retourné est disponible au bureau de poste.",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  });
+
+  await enqueueDailyMonitor(env, new Date("2026-09-02T05:05:00.000Z"));
+  const morningMessage = queued.shift();
+  let morningAcknowledged = false;
+  await processTrackingMessage({
+    body: morningMessage.body,
+    ack() { morningAcknowledged = true; },
+    retry() { throw new Error("Ambiguous successful responses must not retry."); }
+  }, env, {
+    fetchImpl: async () => Response.json({
+      returnCode: 200,
+      shipment: { event: [{ date: "2026-09-02T05:10:00.000Z", label: "Information prochainement disponible.", code: "INFO" }] }
+    })
+  });
+  assert.equal(morningAcknowledged, true);
+  let stored = database.prepare("SELECT tracking_state, status_text FROM orders").get();
+  assert.equal(stored.tracking_state, "pickup_ready");
+  assert.match(stored.status_text, /prochainement disponible/i);
+
+  await enqueueDailyMonitor(env, new Date("2026-09-03T05:05:00.000Z"));
+  const failedMessage = queued.shift();
+  let retries = 0;
+  let acknowledged = false;
+  const queueMessage = {
+    body: failedMessage.body,
+    ack() { acknowledged = true; },
+    retry() { retries += 1; }
+  };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await processTrackingMessage(queueMessage, env, { fetchImpl: async () => { throw new Error("Temporary Okapi outage"); } });
+  }
+  assert.equal(retries, 3);
+  assert.equal(acknowledged, true);
+  stored = database.prepare("SELECT tracking_state, status_text FROM orders").get();
+  assert.equal(stored.tracking_state, "pickup_ready");
+  assert.match(stored.status_text, /prochainement disponible/i);
+  const failedJob = database.prepare("SELECT status, attempts, last_error FROM monitor_jobs WHERE run_date = '2026-09-03'").get();
+  assert.equal(failedJob.status, "failed");
+  assert.equal(failedJob.attempts, 4);
+  assert.match(failedJob.last_error, /Temporary Okapi outage/);
+});
+
 test("does not let an older browser upload hide a newer pickup-required result", async (context) => {
   const { database, db } = await monitorDatabase();
   context.after(() => database.close());
