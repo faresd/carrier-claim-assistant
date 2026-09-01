@@ -91,6 +91,11 @@ test("ships portable extension icons and no personal sender defaults", () => {
   }
 });
 
+test("fixes browser pairing to the production monitor origin", () => {
+  const options = fs.readFileSync(path.join(root, "src/options.html"), "utf8");
+  assert.match(options, /name="monitorServerUrl"[^>]+value="https:\/\/tracking\.cheaply\.fr"[^>]+readonly/);
+});
+
 test("includes privacy-safe Chrome Web Store graphics at the required dimensions", () => {
   const pngDimensions = (file) => {
     const data = fs.readFileSync(path.join(root, file));
