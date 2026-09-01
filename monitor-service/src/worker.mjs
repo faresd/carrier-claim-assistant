@@ -2,6 +2,8 @@ import { dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./a
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
+const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
+const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
   chronopost: "https://www.chronopost.fr/service-client-en-ligne/home/iv4.html?lang=fr_FR"
@@ -106,9 +108,16 @@ async function extensionAuthorized(request, env) {
   return { authorized: true, deviceId: device.id };
 }
 
+export function allowedApiOrigin(request) {
+  const origin = clean(request.headers.get("origin"), 300);
+  if (origin === DASHBOARD_ORIGIN || EXTENSION_ORIGIN.test(origin)) return origin;
+  return "";
+}
+
 function corsHeaders(request) {
+  const origin = allowedApiOrigin(request);
   return {
-    "access-control-allow-origin": request.headers.get("origin") || "*",
+    ...(origin ? { "access-control-allow-origin": origin } : {}),
     "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
     "access-control-allow-headers": "authorization,content-type,x-csrf-token",
     "access-control-max-age": "86400",
@@ -571,7 +580,7 @@ async function claimPairingCode(request, env) {
   const code = clean(body.code, 6);
   const now = new Date();
   const origin = request.headers.get("origin") || "";
-  if (origin && !origin.startsWith("chrome-extension://")) throw new Error("Pairing is only available from the Chrome/Brave extension.");
+  if (origin && !EXTENSION_ORIGIN.test(origin)) throw new Error("Pairing is only available from the Chrome/Brave extension.");
   const remoteAddress = request.headers.get("cf-connecting-ip") || "unknown";
   const windowNumber = Math.floor(now.getTime() / (15 * 60000));
   const attemptKey = await sha256(`pairing:${remoteAddress}:${windowNumber}`);
@@ -684,7 +693,12 @@ async function api(request, env, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+    if (request.method === "OPTIONS") {
+      if (request.headers.get("origin") && !allowedApiOrigin(request)) {
+        return new Response(null, { status: 403, headers: { vary: "Origin" } });
+      }
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
     if (url.pathname === "/api/health") return json({ ok: true, service: "carrier-return-monitor" }, 200, corsHeaders(request));
     const authResponse = await handleDashboardAuth(request, env, url);
     if (authResponse) return authResponse;

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor, upsertOrder } from "../src/worker.mjs";
+import monitorWorker, { allowedApiOrigin, classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor, upsertOrder } from "../src/worker.mjs";
 
 class D1SqliteAdapter {
   constructor(database) {
@@ -57,6 +57,38 @@ test("runs only during the seven o'clock Paris hour", () => {
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T05:15:00Z")), true);
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T06:15:00Z")), false);
   assert.equal(shouldRunMorningMonitor(new Date("2026-12-01T06:15:00Z")), true);
+});
+
+test("allows API CORS only for the production dashboard and real extension origins", async () => {
+  const dashboard = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: "https://tracking.cheaply.fr" }
+  });
+  const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const extension = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: extensionOrigin }
+  });
+  const untrusted = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: "https://example.test" }
+  });
+
+  assert.equal(allowedApiOrigin(dashboard), "https://tracking.cheaply.fr");
+  assert.equal(allowedApiOrigin(extension), extensionOrigin);
+  assert.equal(allowedApiOrigin(untrusted), "");
+
+  const dashboardResponse = await monitorWorker.fetch(dashboard, {});
+  assert.equal(dashboardResponse.status, 204);
+  assert.equal(dashboardResponse.headers.get("access-control-allow-origin"), "https://tracking.cheaply.fr");
+
+  const extensionResponse = await monitorWorker.fetch(extension, {});
+  assert.equal(extensionResponse.status, 204);
+  assert.equal(extensionResponse.headers.get("access-control-allow-origin"), extensionOrigin);
+
+  const untrustedResponse = await monitorWorker.fetch(untrusted, {});
+  assert.equal(untrustedResponse.status, 403);
+  assert.equal(untrustedResponse.headers.get("access-control-allow-origin"), null);
 });
 
 test("does not let an older browser upload hide a newer pickup-required result", async (context) => {

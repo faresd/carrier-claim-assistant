@@ -33,6 +33,8 @@ Sender settings, cached audit results, and successful claim outcomes are stored 
 
 When cloud sync is enabled, synchronized records—including the sender, recipient, shipment, item, and editable claim-preparation fields needed for the operator's carrier workflow—remain in the configured monitor database until the operator deletes that service/database. Marking a returned parcel as received moves it to Resolved and stops future tracking checks; it does not automatically delete the history. Browser pairing codes and claim-launch links expire after ten minutes. Per-device tokens remain until revoked or the monitor database is removed.
 
+The monitor accepts browser API requests only from `https://tracking.cheaply.fr` and valid `chrome-extension://` origins. Cross-origin preflight requests from ordinary websites are rejected; bearer-token and SSO authorization checks still apply independently.
+
 ## Sharing and sale
 
 The extension has no analytics, advertising, or third-party tracking libraries. Data is not sold, rented, or shared for advertising, profiling, or unrelated purposes. Data is disclosed to Amazon Seller Central, La Poste, or Chronopost only when necessary for a feature initiated by the user on those services.

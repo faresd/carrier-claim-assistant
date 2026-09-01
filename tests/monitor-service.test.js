@@ -43,7 +43,7 @@ test("browser pairing is short-lived, rate-limited, and revocable from the dashb
   assert.match(worker, /now\.getTime\(\) \+ 10 \* 60000/);
   assert.match(worker, /attempt_count/);
   assert.match(worker, /> 10/);
-  assert.match(worker, /chrome-extension:\/\//);
+  assert.match(worker, /EXTENSION_ORIGIN\.test\(origin\)/);
   assert.match(worker, /\/api\/devices/);
   assert.match(worker, /revoked_at = \?/);
   assert.match(dashboard, /id="device-list"/);
@@ -68,6 +68,9 @@ test("dashboard assets are protected by a restrictive browser security policy", 
   assert.match(worker, /frame-ancestors 'none'/);
   assert.match(worker, /x-content-type-options/);
   assert.match(worker, /permissions-policy/);
+  assert.match(worker, /DASHBOARD_ORIGIN = "https:\/\/tracking\.cheaply\.fr"/);
+  assert.match(worker, /EXTENSION_ORIGIN = \/\^chrome-extension:/);
+  assert.doesNotMatch(worker, /access-control-allow-origin": request\.headers\.get\("origin"\) \|\| "\*"/);
 });
 
 test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", () => {

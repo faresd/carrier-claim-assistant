@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-VERSION="$(node -p "require('$PROJECT_DIR/manifest.json').version")"
+NODE_BIN="${NODE_BIN:-node}"
+VERSION="$("$NODE_BIN" -p "require('$PROJECT_DIR/manifest.json').version")"
 DIST_DIR="$PROJECT_DIR/dist"
 STAGING_DIR="$PROJECT_DIR/.build/package-extension"
 ARCHIVE_NAME="carrier-claim-assistant-v${VERSION}.zip"
@@ -22,6 +23,5 @@ rm -f "$ARCHIVE_PATH"
   zip -q -r "$ARCHIVE_PATH" manifest.json src icons
 )
 
-node "$SCRIPT_DIR/inspect-package.mjs" "$ARCHIVE_PATH"
+"$NODE_BIN" "$SCRIPT_DIR/inspect-package.mjs" "$ARCHIVE_PATH"
 printf '%s\n' "$ARCHIVE_PATH"
-
