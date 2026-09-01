@@ -1,6 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor } from "../src/worker.mjs";
+import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import { classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor, upsertOrder } from "../src/worker.mjs";
+
+class D1SqliteAdapter {
+  constructor(database) {
+    this.database = database;
+  }
+
+  prepare(sql) {
+    const statement = this.database.prepare(sql);
+    let parameters = [];
+    const bound = {
+      bind: (...values) => {
+        parameters = values;
+        return bound;
+      },
+      first: async () => statement.get(...parameters) || null,
+      all: async () => ({ results: statement.all(...parameters) }),
+      run: async () => ({ success: true, meta: statement.run(...parameters) })
+    };
+    return bound;
+  }
+}
+
+async function monitorDatabase() {
+  const database = new DatabaseSync(":memory:");
+  database.exec(await readFile(new URL("../migrations/0001_initial.sql", import.meta.url), "utf8"));
+  return { database, db: new D1SqliteAdapter(database) };
+}
 
 test("classifies a returned parcel waiting for sender pickup as urgent", () => {
   assert.equal(classifyTrackingState(
@@ -28,4 +57,69 @@ test("runs only during the seven o'clock Paris hour", () => {
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T05:15:00Z")), true);
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T06:15:00Z")), false);
   assert.equal(shouldRunMorningMonitor(new Date("2026-12-01T06:15:00Z")), true);
+});
+
+test("does not let an older browser upload hide a newer pickup-required result", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "402-2797047-3010738",
+    trackingNumber: "8U02230078613",
+    sellerAccountId: "merchant-one",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "pickup_ready",
+    statusText: "Votre envoi retourné est disponible au bureau de poste.",
+    statusSummary: "Retour à l'expéditeur · disponible au bureau de poste",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  });
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "in_transit",
+    statusText: "Votre colis est en cours d'acheminement.",
+    statusSummary: "Pris en charge · en transit",
+    checkedAt: "2026-08-31T18:00:00.000Z"
+  });
+
+  const row = database.prepare("SELECT tracking_state, status_text, status_summary, checked_at FROM orders").get();
+  assert.equal(row.tracking_state, "pickup_ready");
+  assert.match(row.status_text, /disponible/i);
+  assert.match(row.status_summary, /retour/i);
+  assert.equal(row.checked_at, "2026-09-01T07:00:00.000Z");
+});
+
+test("accepts a newer carrier snapshot but keeps delivered terminal forever", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "403-7918938-7771545",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-two",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "returning",
+    statusText: "Retour à l'expéditeur.",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  });
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "delivered",
+    statusText: "Votre colis a été livré.",
+    checkedAt: "2026-09-01T08:00:00.000Z"
+  });
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "in_transit",
+    statusText: "Ancienne information en transit.",
+    checkedAt: "2026-09-02T09:00:00.000Z"
+  });
+
+  const row = database.prepare("SELECT tracking_state, status_text, checked_at FROM orders").get();
+  assert.equal(row.tracking_state, "delivered");
+  assert.match(row.status_text, /livr/i);
+  assert.equal(row.checked_at, "2026-09-01T08:00:00.000Z");
 });

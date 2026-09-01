@@ -148,7 +148,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   };
 }
 
-async function upsertOrder(db, input) {
+export async function upsertOrder(db, input) {
   const order = safeOrder(input);
   if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || !order.trackingNumber) {
     throw new Error("A valid Amazon order ID and tracking number are required.");
@@ -179,12 +179,28 @@ async function upsertOrder(db, input) {
       recipient_country = CASE WHEN excluded.recipient_country != '' THEN excluded.recipient_country ELSE orders.recipient_country END,
       tracking_state = CASE
         WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.tracking_state
+        WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.tracking_state
         WHEN excluded.tracking_state = 'unknown' AND orders.tracking_state != 'unknown' THEN orders.tracking_state
         ELSE excluded.tracking_state
       END,
-      status_text = CASE WHEN excluded.status_text != '' THEN excluded.status_text ELSE orders.status_text END,
-      status_summary = CASE WHEN excluded.status_summary != '' THEN excluded.status_summary ELSE orders.status_summary END,
-      checked_at = CASE WHEN excluded.checked_at != '' THEN excluded.checked_at ELSE orders.checked_at END,
+      status_text = CASE
+        WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.status_text
+        WHEN excluded.status_text = '' THEN orders.status_text
+        WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.status_text
+        ELSE excluded.status_text
+      END,
+      status_summary = CASE
+        WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.status_summary
+        WHEN excluded.status_summary = '' THEN orders.status_summary
+        WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.status_summary
+        ELSE excluded.status_summary
+      END,
+      checked_at = CASE
+        WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.checked_at
+        WHEN excluded.checked_at = '' THEN orders.checked_at
+        WHEN orders.checked_at = '' OR excluded.checked_at >= orders.checked_at THEN excluded.checked_at
+        ELSE orders.checked_at
+      END,
       claim_recommended = MAX(orders.claim_recommended, excluded.claim_recommended),
       claim_reason = CASE WHEN excluded.claim_reason != 'none' THEN excluded.claim_reason ELSE orders.claim_reason END,
       claim_title = CASE WHEN excluded.claim_title != '' THEN excluded.claim_title ELSE orders.claim_title END,
