@@ -136,6 +136,10 @@ test("persists successful claims to Seller Notes and a sent button state", () =>
   assert.match(assistantCss, /data-state="sent"/);
 });
 
+test("clears prior shipment state before registering an Amazon SPA navigation", () => {
+  assert.match(amazonScript, /if \(shipmentChanged\) resetShipmentState\(\);\s*chrome\.runtime\.sendMessage\(\{\s*type: "REGISTER_TRACKED_ORDER"/);
+});
+
 test("makes both carrier confirmation panels collapsible", () => {
   assert.match(laposteScript, /id="lpca-collapse"/);
   assert.match(chronopostScript, /id="lpca-collapse"/);

@@ -565,6 +565,16 @@
     ].join("|");
   }
 
+  function resetShipmentState() {
+    state.result = null;
+    state.recommendation = null;
+    state.checkedAt = "";
+    state.checking = false;
+    state.requestId = null;
+    state.outcome = null;
+    state.noteAttempts = 0;
+  }
+
   async function refreshOrderFromPage() {
     const nextOrder = parser.enrichSellerContext(parser.parseOrderDetails(document.body.innerText, location.href), document, location.href);
     const signature = orderSignature(nextOrder);
@@ -593,6 +603,7 @@
       return;
     }
 
+    if (shipmentChanged) resetShipmentState();
     chrome.runtime.sendMessage({
       type: "REGISTER_TRACKED_ORDER",
       order,
@@ -602,14 +613,6 @@
     }).catch(() => {});
 
     if (!shipmentChanged) return;
-
-    state.result = null;
-    state.recommendation = null;
-    state.checkedAt = "";
-    state.checking = false;
-    state.requestId = null;
-    state.outcome = null;
-    state.noteAttempts = 0;
 
     const savedOutcome = await storedOutcomeForOrder();
     if (savedOutcome) {
