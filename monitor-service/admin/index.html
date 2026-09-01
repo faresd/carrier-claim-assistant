@@ -68,11 +68,13 @@
         <div class="table-wrap" hidden>
           <table>
             <thead>
-              <tr><th>Order</th><th>Tracking</th><th>Current state</th><th>Last carrier event</th><th>Claim</th><th class="align-right">Actions</th></tr>
+              <tr><th>Order</th><th>Amazon account</th><th>Tracking</th><th>Current state</th><th>Last carrier event</th><th>Claim</th><th class="align-right">Actions</th></tr>
             </thead>
             <tbody id="orders-body"></tbody>
           </table>
         </div>
+        <div id="scroll-status" class="scroll-status" role="status" aria-live="polite"></div>
+        <div id="scroll-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
       </main>
     </div>
 

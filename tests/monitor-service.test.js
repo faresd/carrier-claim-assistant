@@ -76,6 +76,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
     assert.match(dashboard, new RegExp(`data-view="${view}"`));
   }
   assert.match(dashboard, /id="account-filter"/);
+  assert.match(dashboard, /<th>Amazon account<\/th>/);
+  assert.match(dashboardScript, /class="account-name"/);
   assert.match(dashboard, /id="claim-dialog"/);
   assert.match(dashboard, /id="claim-reason"/);
   assert.match(dashboard, /id="claim-recipient-title"/);
@@ -98,6 +100,19 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
   assert.match(worker, /order_ids/);
+  assert.match(dashboard, /id="scroll-sentinel"/);
+  assert.match(dashboard, /id="scroll-status"/);
+  assert.match(dashboardScript, /new IntersectionObserver/);
+  assert.match(dashboardScript, /PAGE_SIZE = 100/);
+  assert.match(dashboardScript, /rootMargin: "600px 0px"/);
+  assert.match(dashboardScript, /params\.set\("summary", "1"\)/);
+  assert.doesNotMatch(dashboardScript, /offset < 100000/);
+  assert.match(worker, /dashboardOrderSummary/);
+  assert.match(worker, /GROUP BY tracking_state/);
+  assert.match(dashboardScript, /carrierTrackingUrl/);
+  assert.match(dashboardScript, /chronopost\.fr\/tracking-no-cms\/suivi-page/);
+  assert.match(dashboardScript, /laposte\.fr\/outils\/suivre-vos-envois\?code=/);
+  assert.match(dashboardScript, /Open official carrier tracking/);
 });
 
 test("dashboard assets are protected by a restrictive browser security policy", () => {

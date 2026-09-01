@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import monitorWorker, {
   allowedApiOrigin,
   classifyTrackingState,
+  dashboardOrderSummary,
   enqueueDailyMonitor,
   fetchOfficialTracking,
   fetchOpenAIInterpretation,
@@ -67,6 +68,28 @@ test("does not treat a future return warning as sender pickup", () => {
 test("keeps return-in-transit and lost parcels in separate queues", () => {
   assert.equal(classifyTrackingState("Votre colis est en retour à l'expéditeur."), "returning");
   assert.equal(classifyTrackingState("Votre colis ne peut plus être localisé."), "lost");
+});
+
+test("summarizes every dashboard queue independently of the current page", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const common = { marketplaceId: "A13V1IB3VIYZZH", carrierId: "laposte", sellerAccountId: "merchant-one", sellerAccountName: "Cheaply France" };
+  for (const [index, trackingState] of ["pickup_ready", "returning", "lost", "damaged", "resolved", "delivered"].entries()) {
+    await upsertOrder(db, {
+      ...common,
+      orderId: `400-000000${index}-000000${index}`,
+      trackingNumber: `8U0000000000${index}`,
+      trackingState: trackingState === "resolved" ? "in_transit" : trackingState,
+      recipientName: index === 2 ? "Camille Martin" : "Other Recipient"
+    });
+  }
+  await db.prepare("UPDATE orders SET tracking_state = 'resolved' WHERE order_id = ?")
+    .bind("400-0000004-0000004").run();
+  const summary = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders?view=lost&account=merchant-one"));
+  assert.deepEqual(summary.counts, { all: 6, pickup: 1, returning: 1, lost: 2, returned: 2, resolved: 1 });
+  assert.deepEqual(summary.accounts, [{ accountId: "merchant-one", accountName: "Cheaply France" }]);
+  const searched = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders?q=Camille"));
+  assert.deepEqual(searched.counts, { all: 1, pickup: 0, returning: 0, lost: 1, returned: 0, resolved: 0 });
 });
 
 test("lets the newest delivered or lost event override older return history", () => {

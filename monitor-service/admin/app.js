@@ -1,11 +1,17 @@
 (function initReturnDashboard() {
   "use strict";
 
-  const state = { orders: [], view: "all", query: "", accountId: "", csrfToken: "", user: null, authenticated: false, claimOrder: null };
+  const PAGE_SIZE = 100;
+  const state = {
+    orders: [], view: "all", query: "", accountId: "", csrfToken: "", user: null,
+    authenticated: false, claimOrder: null, offset: 0, hasMore: true, loadingMore: false,
+    requestVersion: 0, summary: null, accounts: []
+  };
   const body = document.getElementById("orders-body");
   const table = document.querySelector(".table-wrap");
   const loading = document.getElementById("loading");
   const toast = document.getElementById("toast");
+  const scrollStatus = document.getElementById("scroll-status");
 
   function escapeHtml(value) {
     return String(value || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -36,6 +42,13 @@
     return Number.isFinite(date.getTime()) && date.getTime() > 0
       ? new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(date)
       : "Not checked";
+  }
+
+  function carrierTrackingUrl(order) {
+    const trackingNumber = encodeURIComponent(order.trackingNumber || "");
+    return /chrono/i.test(`${order.carrierId || ""} ${order.carrierLabel || ""}`)
+      ? `https://www.chronopost.fr/tracking-no-cms/suivi-page?langue=fr&listeNumerosLT=${trackingNumber}`
+      : `https://www.laposte.fr/outils/suivre-vos-envois?code=${trackingNumber}`;
   }
 
   function claimPackage(order) {
@@ -81,19 +94,8 @@
     location.replace(`/api/auth/login?return_to=${encodeURIComponent(returnTo)}`);
   }
 
-  function filteredOrders() {
-    const wanted = state.orders.filter((order) => {
-      if (state.view === "lost" && !["lost", "damaged"].includes(order.trackingState)) return false;
-      if (state.view === "returned" && !["returning", "pickup_ready"].includes(order.trackingState)) return false;
-      if (state.view === "resolved" && order.trackingState !== "resolved") return false;
-      if (state.accountId && order.accountId !== state.accountId) return false;
-      const haystack = `${order.orderId} ${order.trackingNumber} ${order.recipientName}`.toLowerCase();
-      return haystack.includes(state.query.toLowerCase());
-    });
-    return wanted;
-  }
-
   function counts() {
+    if (state.summary && state.summary.counts) return state.summary.counts;
     const count = (states) => state.orders.filter((order) => states.includes(order.trackingState)).length;
     return {
       all: state.orders.length,
@@ -119,13 +121,15 @@
     document.getElementById("urgent-copy").textContent = `${totals.pickup} returned package${totals.pickup === 1 ? " is" : "s are"} waiting to be collected.`;
 
     const accountFilter = document.getElementById("account-filter");
-    const accounts = [...new Map(state.orders.map((order) => [order.accountId, order.accountName || order.accountId])).entries()]
-      .sort((left, right) => left[1].localeCompare(right[1]));
+    const accounts = state.accounts.length
+      ? state.accounts.map((account) => [account.accountId, account.accountName])
+      : [...new Map(state.orders.map((order) => [order.accountId, order.accountName || order.accountId])).entries()]
+        .sort((left, right) => left[1].localeCompare(right[1]));
     accountFilter.innerHTML = `<option value="">All accounts</option>${accounts.map(([id, name]) => `<option value="${escapeHtml(id)}"${state.accountId === id ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}`;
-    const orders = filteredOrders();
+    const orders = state.orders;
     table.hidden = orders.length === 0;
     loading.hidden = orders.length > 0;
-    if (!orders.length) loading.textContent = state.orders.length ? "No orders match this view." : "No tracked orders have been registered yet.";
+    if (!orders.length && !state.loadingMore) loading.textContent = totals.all ? "No orders match this view." : "No tracked orders have been registered yet.";
     body.innerHTML = orders.map((order) => {
       const address = [order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(" · ");
       const claim = order.claimStatus === "sent"
@@ -134,8 +138,9 @@
           ? `<strong>${order.claimStatus === "requested" ? "Requested" : "Recommended"}</strong>${escapeHtml(order.claimReason || "Review")}`
           : "No claim queued";
       return `<tr>
-        <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.accountName || order.accountId)} · ${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>
-        <td><span class="tracking">${escapeHtml(order.trackingNumber)}</span><span class="subline">${escapeHtml(order.carrierLabel || order.carrierId)}</span></td>
+        <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>
+        <td><strong class="account-name">${escapeHtml(order.accountName || order.accountId || "Amazon seller")}</strong><span class="subline">${escapeHtml(order.accountId || "Account ID not captured")}</span></td>
+        <td><a class="tracking tracking-link" href="${escapeHtml(carrierTrackingUrl(order))}" target="_blank" rel="noopener" title="Open official carrier tracking">${escapeHtml(order.trackingNumber)}</a><span class="subline">${escapeHtml(order.carrierLabel || order.carrierId)}</span></td>
         <td><span class="state state--${escapeHtml(order.trackingState)}">${escapeHtml(labelFor(order.trackingState))}</span><span class="subline">Checked ${escapeHtml(dateTime(order.checkedAt))}</span></td>
         <td class="status-copy">${escapeHtml(order.statusText || "Waiting for the morning check")}<span class="subline">Updated ${escapeHtml(dateTime(order.updatedAt))}</span></td>
         <td class="claim">${claim}</td>
@@ -149,36 +154,66 @@
         </div></td>
       </tr>`;
     }).join("");
+    if (state.loadingMore) scrollStatus.textContent = state.orders.length ? "Loading more orders…" : "Loading tracked orders…";
+    else if (state.orders.length) scrollStatus.textContent = state.hasMore ? "Scroll to load more orders" : `All ${state.orders.length} matching orders loaded`;
+    else scrollStatus.textContent = "";
   }
 
-  async function load() {
-    if (!state.authenticated) return;
-    loading.hidden = false;
-    loading.textContent = "Loading tracked orders…";
-    table.hidden = true;
+  async function loadMore(version = state.requestVersion) {
+    if (!state.authenticated || state.loadingMore || !state.hasMore || version !== state.requestVersion) return;
+    state.loadingMore = true;
+    render();
+    const offset = state.offset;
+    const params = new URLSearchParams({ view: state.view, limit: String(PAGE_SIZE), offset: String(offset) });
+    if (state.accountId) params.set("account", state.accountId);
+    if (state.query) params.set("q", state.query);
+    if (offset === 0) params.set("summary", "1");
     try {
-      let offset = 0;
-      let payload = null;
-      const orders = [];
-      do {
-        payload = await api(`/api/orders?limit=500&offset=${offset}`);
-        orders.push(...(payload.orders || []));
-        offset += (payload.orders || []).length;
-      } while (payload.hasMore && offset < 100000);
-      state.orders = orders;
+      const payload = await api(`/api/orders?${params}`);
+      if (version !== state.requestVersion) return;
+      const page = payload.orders || [];
+      const seen = new Set(state.orders.map((order) => order.recordId));
+      state.orders.push(...page.filter((order) => !seen.has(order.recordId)));
+      state.offset += page.length;
+      state.hasMore = Boolean(payload.hasMore && page.length);
+      if (payload.summary) {
+        state.summary = payload.summary;
+        state.accounts = payload.summary.accounts || [];
+      }
       document.getElementById("last-sync").textContent = `Server ${dateTime(payload.serverTime)}`;
       document.getElementById("auth-card").hidden = true;
-      render();
     } catch (error) {
+      if (version !== state.requestVersion) return;
       if (error.status === 401) {
         state.authenticated = false;
         startLogin();
         return;
       }
+      state.hasMore = false;
       loading.hidden = false;
       loading.textContent = error.message;
       document.getElementById("auth-card").hidden = false;
+    } finally {
+      if (version === state.requestVersion) {
+        state.loadingMore = false;
+        render();
+      }
     }
+  }
+
+  async function load() {
+    if (!state.authenticated) return;
+    const version = ++state.requestVersion;
+    state.orders = [];
+    state.offset = 0;
+    state.hasMore = true;
+    state.loadingMore = false;
+    state.summary = null;
+    loading.hidden = false;
+    loading.textContent = "Loading tracked orders…";
+    table.hidden = true;
+    render();
+    await loadMore(version);
   }
 
   async function showDetails(order) {
@@ -261,10 +296,19 @@
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("is-active", item === tab));
     state.view = tab.dataset.view;
-    render();
+    load();
   }));
-  document.getElementById("search").addEventListener("input", (event) => { state.query = event.target.value; render(); });
-  document.getElementById("account-filter").addEventListener("change", (event) => { state.accountId = event.target.value; render(); });
+  let searchTimer = 0;
+  document.getElementById("search").addEventListener("input", (event) => {
+    state.query = event.target.value.trim();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(load, 300);
+  });
+  document.getElementById("account-filter").addEventListener("change", (event) => { state.accountId = event.target.value; load(); });
+  const scrollObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) loadMore();
+  }, { rootMargin: "600px 0px" });
+  scrollObserver.observe(document.getElementById("scroll-sentinel"));
   document.getElementById("refresh").addEventListener("click", load);
   document.getElementById("export-history").addEventListener("click", async (event) => {
     event.currentTarget.disabled = true;
