@@ -187,36 +187,51 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
     },
     ...(body == null ? {} : { body: JSON.stringify(body) })
   });
-  const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
-  await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .bind("654321", "Packing desk", new Date().toISOString(), expiresAt).run();
+  const createPairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing", {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: { deviceName: "Packing desk" }
+  }), env);
+  assert.equal(createPairingResponse.status, 200);
+  const createdPairing = await createPairingResponse.json();
+  assert.match(createdPairing.code, /^\d{6}$/);
+  const storedPairing = await db.prepare("SELECT code FROM pairing_codes WHERE used_at = ''").first();
+  assert.match(storedPairing.code, /^[a-f0-9]{64}$/);
+  assert.notEqual(storedPairing.code, createdPairing.code);
 
   const originlessPairing = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
     origin: "",
-    body: { code: "654321", deviceName: "Command-line client" }
+    body: { code: createdPairing.code, deviceName: "Command-line client" }
   }), env);
   assert.equal(originlessPairing.status, 400);
   assert.match((await originlessPairing.json()).error, /Chrome\/Brave extension/i);
 
   const websitePairing = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
     origin: "https://malicious.invalid",
-    body: { code: "654321", deviceName: "Website" }
+    body: { code: createdPairing.code, deviceName: "Website" }
   }), env);
   assert.equal(websitePairing.status, 400);
   assert.match((await websitePairing.json()).error, /Chrome\/Brave extension/i);
 
   const pairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
-    body: { code: "654321", deviceName: "Work Brave" }
+    body: { code: createdPairing.code, deviceName: "Work Brave" }
   }), env);
   assert.equal(pairingResponse.status, 200);
   const pairing = await pairingResponse.json();
   assert.match(pairing.token, /^[A-Za-z0-9]{64}$/);
   assert.equal(pairing.deviceName, "Work Brave");
 
-  await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .bind("654322", "Packing desk two", new Date().toISOString(), expiresAt).run();
+  const createSecondPairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing", {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: { deviceName: "Packing desk two" }
+  }), env);
+  assert.equal(createSecondPairingResponse.status, 200);
+  const createdSecondPairing = await createSecondPairingResponse.json();
   const secondPairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
-    body: { code: "654322", deviceName: "Warehouse Chrome" }
+    body: { code: createdSecondPairing.code, deviceName: "Warehouse Chrome" }
   }), env);
   assert.equal(secondPairingResponse.status, 200);
   const secondPairing = await secondPairingResponse.json();

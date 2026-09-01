@@ -66,4 +66,6 @@ The code expires after ten minutes and can be used once. Pairing accepts at most
 
 The claim endpoint also requires Chrome/Brave's immutable `chrome-extension://` request origin. A website, command-line request, or originless script cannot redeem a pairing code even if it knows the six digits.
 
+Active six-digit codes are never stored as readable values in D1. The Worker stores a domain-separated HMAC keyed by the dashboard session secret, so a database-only disclosure does not reveal a currently active code or permit an offline six-digit lookup.
+
 After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally.

@@ -154,6 +154,20 @@ async function sha256(value) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function pairingCodeKey(code, env) {
+  const secret = String(env.SESSION_SECRET || "");
+  if (!secret) throw new Error("Pairing is temporarily unavailable.");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`carrier-pairing:${code}`));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function extensionAuthorized(request, env) {
   const token = bearer(request);
   if (!token) return { authorized: false, deviceId: "" };
@@ -642,7 +656,7 @@ async function createPairingCode(request, env) {
     env.DB.prepare("DELETE FROM pairing_attempts WHERE updated_at < ?").bind(new Date(now.getTime() - 86400000).toISOString())
   ]);
   await env.DB.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(code, clean(body.deviceName || "New Chrome/Brave browser", 100), now.toISOString(), expiresAt).run();
+    .bind(await pairingCodeKey(code, env), clean(body.deviceName || "New Chrome/Brave browser", 100), now.toISOString(), expiresAt).run();
   return { code, expiresAt };
 }
 
@@ -660,14 +674,16 @@ async function claimPairingCode(request, env) {
     .bind(attemptKey, new Date(windowNumber * 15 * 60000).toISOString(), now.toISOString()).run();
   const attempts = await env.DB.prepare("SELECT attempt_count FROM pairing_attempts WHERE attempt_key = ?").bind(attemptKey).first();
   if (Number(attempts?.attempt_count || 0) > 10) throw new Error("Too many pairing attempts. Wait fifteen minutes and try again.");
-  const pairing = await env.DB.prepare("SELECT * FROM pairing_codes WHERE code = ? AND used_at = ''").bind(code).first();
+  const storedCode = await pairingCodeKey(code, env);
+  const pairing = await env.DB.prepare("SELECT * FROM pairing_codes WHERE code = ? AND used_at = ''")
+    .bind(storedCode).first();
   if (!pairing || new Date(pairing.expires_at) <= now) throw new Error("Pairing code is invalid or expired.");
   const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
   const deviceId = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO devices (id, name, token_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
       .bind(deviceId, clean(body.deviceName || pairing.device_name, 100), await sha256(token), now.toISOString(), now.toISOString()),
-    env.DB.prepare("UPDATE pairing_codes SET used_at = ? WHERE code = ?").bind(now.toISOString(), code)
+    env.DB.prepare("UPDATE pairing_codes SET used_at = ? WHERE code = ?").bind(now.toISOString(), pairing.code)
   ]);
   return { token, deviceId, deviceName: clean(body.deviceName || pairing.device_name, 100) };
 }
