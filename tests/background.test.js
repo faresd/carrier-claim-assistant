@@ -108,10 +108,15 @@ test("tests a new monitor server before a browser token is paired", async () => 
     });
   };
   try {
-    const response = await send({ type: "TEST_MONITOR_CONNECTION", serverUrl: "https://monitor.example", token: "" });
+    const response = await send({ type: "TEST_MONITOR_CONNECTION", serverUrl: "https://tracking.cheaply.fr", token: "" });
     assert.deepEqual(response, { ok: true });
-    assert.equal(request.url, "https://monitor.example/api/health");
+    assert.equal(request.url, "https://tracking.cheaply.fr/api/health");
     assert.equal(request.options.headers.authorization, undefined);
+    request = null;
+    const rejected = await send({ type: "TEST_MONITOR_CONNECTION", serverUrl: "https://unrelated.example", token: "" });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /secure HTTPS monitor server URL/i);
+    assert.equal(request, null);
   } finally {
     global.fetch = originalFetch;
   }
@@ -190,7 +195,7 @@ test("a revoked device token disables cloud sync without deleting local history"
   local.claimSettings = {
     ...local.claimSettings,
     cloudSyncEnabled: true,
-    monitorServerUrl: "https://monitor.example",
+    monitorServerUrl: "https://tracking.cheaply.fr",
     monitorAccessToken: "revoked-token"
   };
   local.trackedOrdersByOrder = { "111-2222222-3333333": { orderId: "111-2222222-3333333", trackingState: "returning" } };

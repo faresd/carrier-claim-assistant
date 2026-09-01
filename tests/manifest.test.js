@@ -19,7 +19,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.version, packageJson.version);
   assert.deepEqual(manifest.permissions, ["storage", "alarms", "notifications"]);
-  assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://tracking.cheaply.fr/*"]);
 
   const amazon = manifest.content_scripts.find((entry) =>
     entry.matches.includes("https://sellercentral.amazon.fr/orders-v3/order/*")
