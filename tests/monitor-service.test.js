@@ -15,6 +15,7 @@ const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
+const productionSmoke = read("monitor-service", "scripts", "smoke-production.mjs");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
   assert.match(wrangler, /crons\s*=\s*\["\*\/15 \* \* \* \*"\]/);
@@ -113,4 +114,16 @@ test("monitor deployment fails before mutation when required production configur
   }
   assert.match(deploymentValidator, /Use different values/);
   assert.doesNotMatch(deploymentValidator, /console\.(?:log|error)\([^\n]*(?:apiToken|okapiKey|sessionSecret|trackingSecret)/);
+});
+
+test("monitor deployment verifies the live security and authentication boundary", () => {
+  const deployIndex = deployment.indexOf("Deploy Worker, dashboard, queue consumer, and scheduler");
+  const smokeIndex = deployment.indexOf("Verify the live dashboard and authentication boundary");
+  assert.ok(deployIndex > 0 && smokeIndex > deployIndex);
+  assert.match(deployment, /node monitor-service\/scripts\/smoke-production\.mjs/);
+  assert.match(productionSmoke, /\/api\/health/);
+  assert.match(productionSmoke, /\/api\/orders/);
+  assert.match(productionSmoke, /content-security-policy/);
+  assert.match(productionSmoke, /https:\/\/auth\.cheaply\.fr/);
+  assert.match(productionSmoke, /code_challenge_method/);
 });

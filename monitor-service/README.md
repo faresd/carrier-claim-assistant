@@ -47,7 +47,7 @@ Classification is deterministic. AI is deliberately not required for alerts; an 
 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
-The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value.
+The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. After deployment, it automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
 
 Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. Browser uploads use independently revocable per-device bearer tokens; no global master upload token or dashboard bearer token is provisioned by CI.
 
