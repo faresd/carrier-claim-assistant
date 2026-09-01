@@ -71,7 +71,7 @@ Sender type and title are configurable. Recipient country is normalized locally 
 ## Privacy and safety
 
 - Sender profile: `chrome.storage.local`.
-- Buyer/order and pending claim: `chrome.storage.session`.
+- Cached order/tracking records, delivery audits, and confirmed claim outcomes: `chrome.storage.local`; pending claim packages: `chrome.storage.session`.
 - A Manage Orders scan reuses one inactive worker tab and closes it after the page queue completes. A status check started from an individual order still uses one temporary inactive tab.
 - No analytics or third-party libraries.
 - The extension never silently submits the final claim.
