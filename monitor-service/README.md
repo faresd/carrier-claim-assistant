@@ -10,7 +10,7 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
 - **Cheaply SSO**: the dashboard uses the same `auth.cheaply.fr` PKCE authorization-code login as `presence.cheaply.fr`, with RS256/JWKS verification, a secure local session, and CSRF protection.
 - **Cloudflare Queue**: reliable, rate-limited carrier checks that scale beyond one Worker invocation and retry temporary carrier failures.
 - **[Cloudflare D1](https://developers.cloudflare.com/d1/)**: durable multi-account order history, current state, claim context, tracking events, devices, and resolutions.
-- **[La Poste Suivi v2](https://developer.laposte.fr/catalog-apis/suivi%402)**: official tracking source for tracked mail, Colissimo, and Chronopost. The API key is a Worker secret and never reaches the extension.
+- **[La Poste Suivi v2](https://developer.laposte.fr/catalog-apis/suivi%402)** with a controlled legacy fallback: the Worker tries the current `suivi/v2/idships/{tracking}?lang=fr_FR` resource first, then the official original [`suivi/v1/{tracking}`](https://faq.developer.laposte.fr/kb/guide/fr/comment-mauthentifier-et-obtenir-une-cle-dapplication-FGCSUKye5P/Steps/2877169) resource when v2 is unavailable. The API key is a Worker secret and never reaches the extension.
 - **Chrome/Brave extension**: registers Amazon order context, displays row badges, polls urgent alerts, and shows desktop notifications.
 
 Each record includes a sanitized claim-ready package: seller account, shipment and item identifiers, value/quantity, sender contact/address, recipient/title/address, detected reason, editable message, tracking context, and claim outcome. From the dashboard, **Start claim** creates a single-use ten-minute token and opens the official La Poste or Chronopost workflow. Only a paired extension can redeem that token, and the existing final confirmation remains mandatory.
@@ -36,7 +36,7 @@ Only an authenticated dashboard administrator can mark an order resolved or reop
 
 1. Create a Cloudflare D1 database named `carrier-return-monitor`.
 2. Create a Cloudflare Queue named `carrier-tracking-checks`.
-3. Create a free Okapi application, subscribe to La Poste **Suivi v2**, and obtain its `X-Okapi-Key`.
+3. Create an Okapi application and obtain its `X-Okapi-Key`. While Suivi v2 approval is pending, the monitor automatically falls back to the original Suivi v1 endpoint. If the legacy API uses a different application key, add it to the Worker as the optional `LAPOSTE_LEGACY_OKAPI_KEY` secret; otherwise the configured `LAPOSTE_OKAPI_KEY` is reused.
 4. Add the non-sensitive GitHub Actions repository variables:
    - `CF_ACCOUNT_ID`
    - `CF_D1_DATABASE_ID`
@@ -49,7 +49,7 @@ Only an authenticated dashboard administrator can mark an order resolved or reop
 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
-The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2. The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
+The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2 (an explicitly approved pending mode keeps infrastructure deployable while the fallback is used). The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
 
 The health response is ready only after the Worker can see every required secret and binding and all eleven D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
 

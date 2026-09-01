@@ -108,6 +108,54 @@ test("turns a carrier abort into a bounded retryable error", async () => {
   );
 });
 
+test("falls back to the official legacy Suivi v1 endpoint when v2 is unavailable", async () => {
+  const requests = [];
+  const result = await fetchOfficialTracking(
+    "CC105961572FR",
+    { LAPOSTE_OKAPI_KEY: "v2-key", LAPOSTE_LEGACY_ENABLED: "true" },
+    async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).includes("/suivi/v2/")) {
+        return Response.json({ code: "PENDING_APPROVAL", message: "Suivi v2 pending" }, { status: 403 });
+      }
+      return Response.json({ shipment: { event: [
+        { date: "2026-09-01T06:30:00Z", label: "Votre envoi retourné est disponible au bureau de poste", code: "DISPO" }
+      ] } });
+    }
+  );
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /\/suivi\/v2\/idships\/CC105961572FR\?lang=fr_FR$/);
+  assert.match(requests[1].url, /\/suivi\/v1\/CC105961572FR$/);
+  assert.equal(requests[1].options.headers["X-Okapi-Key"], "v2-key");
+  assert.equal(result.source, "laposte-suivi-v1");
+  assert.equal(result.trackingState, "pickup_ready");
+});
+
+test("uses a separate legacy key when one is configured", async () => {
+  const keys = [];
+  const result = await fetchOfficialTracking(
+    "CC105961572FR",
+    { LAPOSTE_LEGACY_OKAPI_KEY: "legacy-key" },
+    async (url, options) => {
+      keys.push(options.headers["X-Okapi-Key"]);
+      return Response.json({ shipment: { event: [{ label: "En transit", date: "2026-09-01T06:30:00Z" }] } });
+    }
+  );
+  assert.deepEqual(keys, ["legacy-key"]);
+  assert.equal(result.source, "laposte-suivi-v1");
+  assert.equal(result.trackingState, "in_transit");
+});
+
+test("reports both carrier failures without exposing credentials", async () => {
+  await assert.rejects(
+    () => fetchOfficialTracking("CC105961572FR", { LAPOSTE_OKAPI_KEY: "v2-secret", LAPOSTE_LEGACY_OKAPI_KEY: "v1-secret" }, async (url) => {
+      return Response.json({ code: "DENIED", message: "not authorized" }, { status: 403 });
+    }),
+    (error) => /Suivi v2.*Suivi v1/.test(error.message) && !error.message.includes("secret")
+  );
+});
+
 test("runs only during the seven o'clock Paris hour", () => {
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T05:15:00Z")), true);
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T06:15:00Z")), false);

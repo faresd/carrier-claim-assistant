@@ -50,6 +50,24 @@ test("retries a temporary custom-domain failure before succeeding", async () => 
   assert.equal(waits, 1);
 });
 
+test("accepts the fail-closed health response only in approved pending mode", async () => {
+  const previous = process.env.MONITOR_ALLOW_PENDING;
+  process.env.MONITOR_ALLOW_PENDING = "true";
+  try {
+    await verifyProductionMonitor({
+      fetchImpl: async (url) => {
+        const path = new URL(url).pathname;
+        if (path === "/api/health") return Response.json({ ok: false, service: "carrier-return-monitor", ready: false }, { status: 503 });
+        return successfulResponse(url);
+      },
+      attempts: 1
+    });
+  } finally {
+    if (previous === undefined) delete process.env.MONITOR_ALLOW_PENDING;
+    else process.env.MONITOR_ALLOW_PENDING = previous;
+  }
+});
+
 test("rejects an unsafe or path-qualified monitor origin", async () => {
   await assert.rejects(() => verifyProductionMonitor({ baseUrl: "http://tracking.cheaply.fr", attempts: 1 }), /HTTPS origin/);
   await assert.rejects(() => verifyProductionMonitor({ baseUrl: "https://tracking.cheaply.fr/other", attempts: 1 }), /HTTPS origin/);
