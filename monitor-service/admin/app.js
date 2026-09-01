@@ -38,6 +38,15 @@
       : "Not checked";
   }
 
+  function claimPackage(order) {
+    try {
+      const payload = JSON.parse(order.claimPayload || "{}");
+      return payload && typeof payload === "object" ? payload : {};
+    } catch {
+      return {};
+    }
+  }
+
   async function api(path, options = {}) {
     const response = await fetch(path, {
       ...options,
@@ -108,7 +117,7 @@
         <td class="claim">${claim}</td>
         <td><div class="row-actions">
           <button type="button" data-detail="${escapeHtml(order.recordId)}">Details</button>
-          ${!["resolved", "delivered"].includes(order.trackingState) && order.claimStatus !== "sent" ? `<button type="button" data-claim="${escapeHtml(order.recordId)}">Prepare claim</button>` : ""}
+          ${!["resolved", "delivered"].includes(order.trackingState) && order.claimStatus !== "sent" ? `<button type="button" data-launch-claim="${escapeHtml(order.recordId)}">Start ${/chrono/i.test(order.carrierId || order.carrierLabel) ? "Chronopost" : "La Poste"} claim</button>` : ""}
           ${["returning", "pickup_ready"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Confirm received</button>` : ""}
           ${["lost", "damaged"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Mark resolved</button>` : ""}
           ${order.trackingState === "resolved" ? `<button type="button" data-reopen="${escapeHtml(order.recordId)}">Reopen</button>` : ""}
@@ -143,11 +152,18 @@
   }
 
   async function showDetails(order) {
+    const claimData = claimPackage(order);
+    const sender = claimData.sender || {};
+    const item = claimData.order || {};
     const fields = [
       ["Seller account", order.accountName || order.accountId], ["Marketplace", order.marketplaceId],
       ["Tracking state", labelFor(order.trackingState)], ["Tracking number", order.trackingNumber],
       ["Carrier", order.carrierLabel || order.carrierId], ["Last checked", dateTime(order.checkedAt)],
       ["Recipient", order.recipientName], ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
+      ["Sender", [sender.companyName, sender.contactFirstName, sender.contactLastName].filter(Boolean).join(" ")],
+      ["Sender contact", [sender.email, sender.phone].filter(Boolean).join(" · ")],
+      ["Item", [item.productName || order.productName, item.asin, item.sku, item.quantity ? `Qty ${item.quantity}` : "", item.itemValue || order.itemValue].filter(Boolean).join(" · ")],
+      ["Claim message", claimData.details],
       ["Current carrier event", order.statusText], ["Carrier summary", order.statusSummary],
       ["Claim", `${order.claimStatus || "none"}${order.claimReference ? ` · ${order.claimReference}` : ""}`],
       ["Resolution", order.resolvedAt ? `${dateTime(order.resolvedAt)} · ${order.resolutionNote}` : "Open"]
@@ -232,7 +248,7 @@
   body.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    const recordId = button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.claim;
+    const recordId = button.dataset.detail || button.dataset.resolve || button.dataset.reopen || button.dataset.launchClaim;
     const order = state.orders.find((item) => item.recordId === recordId);
     if (!order) return;
     if (button.dataset.detail) return showDetails(order);
@@ -248,11 +264,24 @@
         await api(`/api/orders/${encodeURIComponent(recordId)}/reopen`, { method: "POST", body: "{}" });
         notify("Order reopened.");
       }
-      if (button.dataset.claim) {
+      if (button.dataset.launchClaim) {
+        const claimData = claimPackage(order);
         const reason = prompt("Claim reason: lost, returned, delayed, damaged, delivered_missing, or other", order.claimReason !== "none" ? order.claimReason : order.trackingState === "returning" ? "returned" : "lost");
         if (!reason) return;
-        await api(`/api/orders/${encodeURIComponent(recordId)}/claim`, { method: "POST", body: JSON.stringify({ reason }) });
-        notify("Claim review queued. Open the Amazon order to continue in the extension.");
+        const details = prompt("Review or edit the claim message", claimData.details || order.claimTitle || order.statusText || "");
+        if (!details) return;
+        const isLaPoste = !/chrono/i.test(order.carrierId || order.carrierLabel);
+        const recipientTitle = isLaPoste ? prompt("Recipient title required by La Poste (Monsieur or Madame)", claimData.recipientTitle || "") : claimData.recipientTitle || "";
+        if (isLaPoste && !recipientTitle) return;
+        const claimWindow = window.open("about:blank", "_blank");
+        const launch = await api(`/api/orders/${encodeURIComponent(recordId)}/launch-claim`, {
+          method: "POST",
+          body: JSON.stringify({ reason, details, recipientTitle })
+        });
+        if (!claimWindow) throw new Error("Allow pop-ups for this dashboard, then try again.");
+        claimWindow.opener = null;
+        claimWindow.location.href = launch.url;
+        notify(`${launch.carrier === "chronopost" ? "Chronopost" : "La Poste"} claim opened in the paired extension.`);
       }
       await load();
     } catch (error) { notify(error.message); }

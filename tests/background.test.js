@@ -117,6 +117,30 @@ test("tests a new monitor server before a browser token is paired", async () => 
   }
 });
 
+test("stores a claim-ready order package with sender, recipient, item, and carrier context", async () => {
+  local.senderProfile = {
+    email: "seller@example.com", phone: "+33102030405", contactFirstName: "Camille", contactLastName: "Martin",
+    companyName: "Example SARL", address1: "1 rue de Paris", postalCode: "75001", city: "Paris", country: "France"
+  };
+  local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false };
+  const response = await send({
+    type: "REGISTER_TRACKED_ORDER",
+    order: {
+      orderId: "333-4444444-5555555", trackingNumber: "CC000000003FR", carrier: "Colissimo",
+      productName: "Replacement part", asin: "B000TEST", sku: "SKU-1", quantity: "2", itemValue: "€49.90",
+      recipientName: "Monsieur Jean Dupont", recipientAddress1: "2 rue de Lyon", recipientPostalCode: "69001",
+      recipientCity: "Lyon", recipientCountry: "France", sellerAccountId: "merchant-one", marketplaceId: "A13V1IB3VIYZZH"
+    },
+    result: { statusText: "Colis introuvable", checkedAt: "2026-09-01T07:00:00.000Z" }
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.record.claimPayload.sender.email, "seller@example.com");
+  assert.equal(response.record.claimPayload.order.asin, "B000TEST");
+  assert.equal(response.record.claimPayload.order.recipientCity, "Lyon");
+  assert.equal(response.record.claimPayload.carrier, "laposte");
+  assert.match(response.record.claimPayload.details, /CC000000003FR/);
+});
+
 test("pairing immediately backfills cached orders and marks them synchronized", async () => {
   const originalFetch = global.fetch;
   const orderId = "222-3333333-4444444";

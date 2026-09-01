@@ -1,5 +1,9 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
+const CLAIM_URLS = {
+  laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
+  chronopost: "https://www.chronopost.fr/service-client-en-ligne/home/iv4.html?lang=fr_FR"
+};
 
 export function normalize(value) {
   return String(value || "")
@@ -29,6 +33,24 @@ export function classifyTrackingState(statusText, summaryText = "") {
 
 function clean(value, maximum = 1000) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, maximum);
+}
+
+function sanitizeJson(value, depth = 0) {
+  if (depth > 5 || value == null) return null;
+  if (typeof value === "string") return clean(value, 5000);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeJson(item, depth + 1));
+  if (typeof value !== "object") return null;
+  return Object.fromEntries(Object.entries(value).slice(0, 100)
+    .filter(([key]) => /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(key))
+    .map(([key, item]) => [key, sanitizeJson(item, depth + 1)]));
+}
+
+function claimPayloadJson(input) {
+  const payload = input?.claimPayload && typeof input.claimPayload === "object" ? input.claimPayload : {};
+  const serialized = JSON.stringify(sanitizeJson(payload));
+  return serialized.length <= 30000 ? serialized : "{}";
 }
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -115,6 +137,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     claimStatus: clean(input.claimStatus || "none", 30),
     claimReference: clean(input.claimReference, 80),
     claimSubmittedAt: clean(input.claimSubmittedAt, 40),
+    claimPayload: claimPayloadJson(input),
     pickupNotifiedAt: clean(input.pickupNotifiedAt, 40),
     resolvedAt: clean(input.resolvedAt, 40),
     resolutionNote: clean(input.resolutionNote, 500),
@@ -133,9 +156,9 @@ async function upsertOrder(db, input) {
       record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, ship_date, deliver_by, item_value,
       product_name, recipient_name, recipient_address1, recipient_address2, recipient_city,
       recipient_postal_code, recipient_country, tracking_state, status_text, status_summary, checked_at,
-      claim_recommended, claim_reason, claim_title, claim_status, claim_reference, claim_submitted_at,
+      claim_recommended, claim_reason, claim_title, claim_status, claim_reference, claim_submitted_at, claim_payload,
       pickup_notified_at, resolved_at, resolution_note, first_seen_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(record_id) DO UPDATE SET
       account_name = CASE WHEN excluded.account_name != '' THEN excluded.account_name ELSE orders.account_name END,
       tracking_number = excluded.tracking_number,
@@ -166,6 +189,7 @@ async function upsertOrder(db, input) {
       claim_status = CASE WHEN excluded.claim_status != 'none' THEN excluded.claim_status ELSE orders.claim_status END,
       claim_reference = CASE WHEN excluded.claim_reference != '' THEN excluded.claim_reference ELSE orders.claim_reference END,
       claim_submitted_at = CASE WHEN excluded.claim_submitted_at != '' THEN excluded.claim_submitted_at ELSE orders.claim_submitted_at END,
+      claim_payload = CASE WHEN excluded.claim_payload != '{}' THEN excluded.claim_payload ELSE orders.claim_payload END,
       pickup_notified_at = CASE WHEN excluded.pickup_notified_at != '' THEN excluded.pickup_notified_at ELSE orders.pickup_notified_at END,
       resolved_at = CASE WHEN excluded.resolved_at != '' THEN excluded.resolved_at ELSE orders.resolved_at END,
       resolution_note = CASE WHEN excluded.resolution_note != '' THEN excluded.resolution_note ELSE orders.resolution_note END,
@@ -176,7 +200,7 @@ async function upsertOrder(db, input) {
     order.deliverBy, order.itemValue, order.productName, order.recipientName, order.recipientAddress1,
     order.recipientAddress2, order.recipientCity, order.recipientPostalCode, order.recipientCountry,
     order.trackingState, order.statusText, order.statusSummary, order.checkedAt, order.claimRecommended,
-    order.claimReason, order.claimTitle, order.claimStatus, order.claimReference, order.claimSubmittedAt,
+    order.claimReason, order.claimTitle, order.claimStatus, order.claimReference, order.claimSubmittedAt, order.claimPayload,
     order.pickupNotifiedAt, order.resolvedAt, order.resolutionNote, order.firstSeenAt, order.updatedAt
   ).run();
   await db.prepare(`INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at)
@@ -392,6 +416,95 @@ async function mutateOrder(request, env, recordId, action, deviceId = "master") 
   return rowToOrder(await env.DB.prepare("SELECT * FROM orders WHERE record_id = ?").bind(recordId).first());
 }
 
+function parsedClaimPayload(row) {
+  try {
+    const payload = JSON.parse(row?.claim_payload || "{}");
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+async function createClaimLaunch(request, env, recordId) {
+  const row = await env.DB.prepare("SELECT * FROM orders WHERE record_id = ?").bind(recordId).first();
+  if (!row) throw new Error("Tracked order not found.");
+  const carrier = row.carrier_id === "chronopost" || /chrono/i.test(row.carrier_label) ? "chronopost" : "laposte";
+  const body = await request.json().catch(() => ({}));
+  const payload = parsedClaimPayload(row);
+  const allowedReasons = ["lost", "returned", "delayed", "damaged", "delivered_missing", "other"];
+  const reason = allowedReasons.includes(body.reason) ? body.reason : allowedReasons.includes(row.claim_reason) ? row.claim_reason : "other";
+  payload.carrier = carrier;
+  payload.reason = reason;
+  payload.details = clean(body.details || payload.details || row.claim_title || `Commande Amazon ${row.order_id} · ${row.status_text}`, 500);
+  payload.recipientTitle = clean(body.recipientTitle || payload.recipientTitle, 30);
+  payload.executionMode = "automatic";
+  payload.order = {
+    ...(payload.order || {}),
+    sourceUrl: row.amazon_url,
+    orderId: row.order_id,
+    trackingNumber: row.tracking_number,
+    shipDate: row.ship_date,
+    deliverBy: row.deliver_by,
+    itemValue: row.item_value,
+    productName: row.product_name,
+    recipientName: row.recipient_name,
+    recipientAddress1: row.recipient_address1,
+    recipientAddress2: row.recipient_address2,
+    recipientCity: row.recipient_city,
+    recipientPostalCode: row.recipient_postal_code,
+    recipientCountry: row.recipient_country,
+    sellerAccountId: row.account_id,
+    sellerAccountName: row.account_name,
+    marketplaceId: row.marketplace_id
+  };
+  const sender = payload.sender || {};
+  const required = [
+    ["sender email", sender.email], ["sender phone", sender.phone],
+    ["sender name/company", sender.contactFirstName || sender.contactLastName || sender.companyName],
+    ["sender address", sender.address1], ["sender postal code", sender.postalCode], ["sender city", sender.city],
+    ["recipient name", payload.order.recipientName], ["recipient address", payload.order.recipientAddress1],
+    ["recipient postal code", payload.order.recipientPostalCode], ["recipient city", payload.order.recipientCity],
+    ["recipient country", payload.order.recipientCountry]
+  ].filter(([, value]) => !clean(value)).map(([label]) => label);
+  if (carrier === "laposte" && !payload.recipientTitle) required.push("recipient title");
+  if (required.length) throw new Error(`Complete the claim package first: ${required.join(", ")}.`);
+
+  const now = new Date();
+  const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
+  const expiresAt = new Date(now.getTime() + 10 * 60000).toISOString();
+  const serialized = JSON.stringify(sanitizeJson(payload));
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM claim_launches WHERE expires_at < ? OR used_at != ''").bind(now.toISOString()),
+    env.DB.prepare("INSERT INTO claim_launches (token_hash, record_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .bind(await sha256(token), recordId, now.toISOString(), expiresAt),
+    env.DB.prepare("UPDATE orders SET claim_status = 'requested', claim_reason = ?, claim_recommended = 1, claim_payload = ?, updated_at = ? WHERE record_id = ?")
+      .bind(reason, serialized, now.toISOString(), recordId)
+  ]);
+  return { url: `${CLAIM_URLS[carrier]}#carrier-claim-launch=${token}`, expiresAt, carrier };
+}
+
+async function redeemClaimLaunch(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const token = clean(body.token, 160);
+  if (!token) throw new Error("The cloud claim link is missing.");
+  const tokenHash = await sha256(token);
+  const row = await env.DB.prepare(`SELECT orders.*, claim_launches.expires_at AS launch_expires_at, claim_launches.used_at AS launch_used_at
+    FROM claim_launches JOIN orders ON orders.record_id = claim_launches.record_id WHERE claim_launches.token_hash = ?`).bind(tokenHash).first();
+  if (!row || row.launch_used_at || new Date(row.launch_expires_at) <= new Date()) throw new Error("This claim link is invalid, expired, or already used.");
+  await env.DB.prepare("UPDATE claim_launches SET used_at = ? WHERE token_hash = ?").bind(new Date().toISOString(), tokenHash).run();
+  const payload = parsedClaimPayload(row);
+  const carrier = row.carrier_id === "chronopost" || /chrono/i.test(row.carrier_label) ? "chronopost" : "laposte";
+  return {
+    ...payload,
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    carrier,
+    executionMode: "automatic",
+    sourceTabId: null,
+    order: { ...(payload.order || {}), orderId: row.order_id, trackingNumber: row.tracking_number, sourceUrl: row.amazon_url }
+  };
+}
+
 async function createPairingCode(request, env) {
   const body = await request.json().catch(() => ({}));
   const now = new Date();
@@ -445,6 +558,15 @@ async function api(request, env, url) {
   const isExtension = extensionAuth.authorized;
   if (!isAdmin && !isExtension) return json({ error: "Unauthorized" }, 401, corsHeaders(request));
 
+  if (url.pathname === "/api/claim-launch/redeem" && request.method === "POST") {
+    if (!isExtension) return json({ error: "Paired browser token required" }, 403, corsHeaders(request));
+    try {
+      return json({ ok: true, claim: await redeemClaimLaunch(request, env) }, 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, 400, corsHeaders(request));
+    }
+  }
+
   if (url.pathname === "/api/pairing" && request.method === "POST") {
     if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
     return json({ ok: true, ...(await createPairingCode(request, env)) }, 200, corsHeaders(request));
@@ -484,6 +606,15 @@ async function api(request, env, url) {
       FROM tracking_events WHERE record_id = ? ORDER BY COALESCE(NULLIF(event_at, ''), observed_at) DESC LIMIT 100`)
       .bind(recordId).all();
     return json({ events: (result.results || []).map(rowToOrder) }, 200, corsHeaders(request));
+  }
+  const launchMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/launch-claim$/);
+  if (launchMatch && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Admin token required" }, 403, corsHeaders(request));
+    try {
+      return json({ ok: true, ...(await createClaimLaunch(request, env, decodeURIComponent(launchMatch[1]))) }, 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, 400, corsHeaders(request));
+    }
   }
   const actionMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/(resolve|reopen|claim|ack-pickup)$/);
   if (actionMatch && request.method === "POST") {

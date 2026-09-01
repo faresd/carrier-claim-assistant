@@ -12,6 +12,8 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
 - **[La Poste Suivi v2](https://developer.laposte.fr/catalog-apis/suivi%402)**: official tracking source for tracked mail, Colissimo, and Chronopost. The API key is a Worker secret and never reaches the extension.
 - **Chrome/Brave extension**: registers Amazon order context, displays row badges, polls urgent alerts, and shows desktop notifications.
 
+Each record includes a sanitized claim-ready package: seller account, shipment and item identifiers, value/quantity, sender contact/address, recipient/title/address, detected reason, editable message, tracking context, and claim outcome. From the dashboard, **Start claim** creates a single-use ten-minute token and opens the official La Poste or Chronopost workflow. Only a paired extension can redeem that token, and the existing final confirmation remains mandatory.
+
 The scheduled trigger runs every fifteen minutes, but the monitor creates one daily run only during the 07:00 Europe/Paris hour. Extra triggers in that hour safely resume any jobs not yet completed, which protects the morning check from a temporary deployment or queue interruption. This preserves the intended local time across daylight-saving changes. The queue consumes checks sequentially below the official API rate limit and retries temporary failures. Delivered and manually resolved parcels are terminal and are excluded from later carrier calls.
 
 ## Return state machine

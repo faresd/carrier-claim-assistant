@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS orders (
   claim_status TEXT NOT NULL DEFAULT 'none',
   claim_reference TEXT NOT NULL DEFAULT '',
   claim_submitted_at TEXT NOT NULL DEFAULT '',
+  claim_payload TEXT NOT NULL DEFAULT '{}',
   pickup_notified_at TEXT NOT NULL DEFAULT '',
   pickup_ack_at TEXT NOT NULL DEFAULT '',
   resolved_at TEXT NOT NULL DEFAULT '',
@@ -115,6 +116,17 @@ CREATE TABLE IF NOT EXISTS pairing_attempts (
   window_started_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS claim_launches (
+  token_hash TEXT PRIMARY KEY,
+  record_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(record_id) REFERENCES orders(record_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS claim_launches_expiry_idx ON claim_launches(expires_at);
 
 CREATE TABLE IF NOT EXISTS notification_receipts (
   record_id TEXT NOT NULL,

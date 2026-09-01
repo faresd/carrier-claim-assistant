@@ -515,7 +515,16 @@
     });
   }
 
-  chrome.runtime.sendMessage({ type: "GET_PENDING_CLAIM", carrier: "laposte" }).then((response) => {
+  async function loadPendingClaim() {
+    const launchToken = new URLSearchParams(location.hash.slice(1)).get("carrier-claim-launch");
+    if (!launchToken) return chrome.runtime.sendMessage({ type: "GET_PENDING_CLAIM", carrier: "laposte" });
+    const response = await chrome.runtime.sendMessage({ type: "REDEEM_CLOUD_CLAIM", token: launchToken });
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    if (!response?.ok) window.alert(`Could not load the dashboard claim: ${response?.error || "Pair this browser with the return monitor first."}`);
+    return response;
+  }
+
+  loadPendingClaim().then((response) => {
     const pendingLaPosteClaim = response?.claim;
     if (!pendingLaPosteClaim) return;
     state.claim = pendingLaPosteClaim;

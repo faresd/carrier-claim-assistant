@@ -24,13 +24,16 @@ test("monitor deployment schedules a DST-safe morning queue with bounded carrier
   assert.match(worker, /delaySeconds:\s*600/);
 });
 
-test("monitor schema keeps multi-account history, idempotent jobs, devices, and notification receipts", () => {
-  for (const table of ["orders", "seller_accounts", "tracking_events", "monitor_runs", "monitor_jobs", "devices", "pairing_codes", "pairing_attempts", "notification_receipts"]) {
+test("monitor schema keeps multi-account history, idempotent jobs, devices, claim launches, and notification receipts", () => {
+  for (const table of ["orders", "seller_accounts", "tracking_events", "monitor_runs", "monitor_jobs", "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts"]) {
     assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
   assert.match(migration, /PRIMARY KEY\(run_date, record_id\)/);
   assert.match(migration, /PRIMARY KEY\(record_id, device_id\)/);
   assert.match(worker, /`\$\{accountId\}\|\$\{marketplaceId\}\|\$\{orderId\}`/);
+  assert.match(migration, /claim_payload TEXT NOT NULL DEFAULT '\{\}'/);
+  assert.match(worker, /\/api\/claim-launch\/redeem/);
+  assert.match(worker, /launch-claim/);
   assert.doesNotMatch(worker, /input\.recordId\s*\|\|/);
 });
 
@@ -50,7 +53,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
     assert.match(dashboard, new RegExp(`data-view="${view}"`));
   }
   assert.match(dashboard, /id="account-filter"/);
-  assert.match(dashboardScript, /data-claim/);
+  assert.match(dashboardScript, /data-launch-claim/);
+  assert.match(dashboardScript, /Review or edit the claim message/);
   assert.match(dashboardScript, /data-resolve/);
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
