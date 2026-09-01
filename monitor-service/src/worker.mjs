@@ -407,6 +407,43 @@ async function listOrders(db, url, deviceId = "master") {
   return (result.results || []).map(rowToOrder);
 }
 
+export async function dashboardOrderSummary(db, url) {
+  const clauses = [];
+  const values = [];
+  const accountId = clean(url.searchParams.get("account"), 180);
+  if (accountId) {
+    clauses.push("account_id = ?");
+    values.push(accountId);
+  }
+  const search = clean(url.searchParams.get("q"), 100);
+  if (search) {
+    clauses.push("(order_id LIKE ? OR tracking_number LIKE ? OR recipient_name LIKE ?)");
+    values.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const [stateResult, accountResult] = await Promise.all([
+    db.prepare(`SELECT tracking_state, COUNT(*) AS count FROM orders ${where} GROUP BY tracking_state`).bind(...values).all(),
+    db.prepare(`SELECT account_id, MAX(account_name) AS account_name FROM seller_accounts
+      GROUP BY account_id ORDER BY account_name, account_id`).all()
+  ]);
+  const states = Object.fromEntries((stateResult.results || []).map((row) => [row.tracking_state, Number(row.count || 0)]));
+  const total = Object.values(states).reduce((sum, count) => sum + count, 0);
+  return {
+    counts: {
+      all: total,
+      pickup: states.pickup_ready || 0,
+      returning: states.returning || 0,
+      lost: (states.lost || 0) + (states.damaged || 0),
+      returned: (states.returning || 0) + (states.pickup_ready || 0),
+      resolved: states.resolved || 0
+    },
+    accounts: (accountResult.results || []).map((row) => ({
+      accountId: row.account_id,
+      accountName: row.account_name || row.account_id
+    }))
+  };
+}
+
 async function exportHistoryPage(db, url) {
   const resources = {
     orders: ["orders", "updated_at DESC"],
@@ -964,7 +1001,13 @@ async function api(request, env, url) {
 
   if (url.pathname === "/api/orders" && request.method === "GET") {
     const orders = await listOrders(env.DB, url, extensionAuth.deviceId || "admin");
-    return json({ orders, hasMore: orders.length === Math.min(500, Number(url.searchParams.get("limit") || 200)), serverTime: new Date().toISOString() }, 200, corsHeaders(request));
+    const summary = url.searchParams.get("summary") === "1" ? await dashboardOrderSummary(env.DB, url) : null;
+    return json({
+      orders,
+      hasMore: orders.length === Math.min(500, Number(url.searchParams.get("limit") || 200)),
+      ...(summary ? { summary } : {}),
+      serverTime: new Date().toISOString()
+    }, 200, corsHeaders(request));
   }
   if (url.pathname === "/api/orders" && ["POST", "PUT"].includes(request.method)) {
     try {
