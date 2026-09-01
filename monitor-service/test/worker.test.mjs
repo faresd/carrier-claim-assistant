@@ -23,6 +23,10 @@ class D1SqliteAdapter {
     };
     return bound;
   }
+
+  async batch(statements) {
+    return Promise.all(statements.map((statement) => statement.run()));
+  }
 }
 
 async function monitorDatabase() {
@@ -89,6 +93,107 @@ test("allows API CORS only for the production dashboard and real extension origi
   const untrustedResponse = await monitorWorker.fetch(untrusted, {});
   assert.equal(untrustedResponse.status, 403);
   assert.equal(untrustedResponse.headers.get("access-control-allow-origin"), null);
+});
+
+test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolves, and revokes access", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const env = { DB: db, ADMIN_TOKEN: "test-admin-token-with-at-least-32-characters" };
+  const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const jsonRequest = (path, { token = "", body = null, origin = extensionOrigin, method = body == null ? "GET" : "POST" } = {}) => new Request(`https://tracking.cheaply.fr${path}`, {
+    method,
+    headers: {
+      origin,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body == null ? {} : { "content-type": "application/json" })
+    },
+    ...(body == null ? {} : { body: JSON.stringify(body) })
+  });
+  const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+  await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .bind("654321", "Packing desk", new Date().toISOString(), expiresAt).run();
+
+  const pairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
+    body: { code: "654321", deviceName: "Work Brave" }
+  }), env);
+  assert.equal(pairingResponse.status, 200);
+  const pairing = await pairingResponse.json();
+  assert.match(pairing.token, /^[A-Za-z0-9]{64}$/);
+  assert.equal(pairing.deviceName, "Work Brave");
+
+  const common = {
+    marketplaceId: "A13V1IB3VIYZZH",
+    carrierId: "laposte",
+    carrierLabel: "Colissimo",
+    trackingState: "returning",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  };
+  const firstOrder = {
+    ...common,
+    orderId: "402-2797047-3010738",
+    trackingNumber: "8U02230078613",
+    sellerAccountId: "merchant-fr-one",
+    sellerAccountName: "Cheaply France"
+  };
+  const secondOrder = {
+    ...common,
+    orderId: "408-9133278-8011502",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-fr-two",
+    sellerAccountName: "Cheaply Outlet"
+  };
+  for (const order of [firstOrder, secondOrder]) {
+    const response = await monitorWorker.fetch(jsonRequest("/api/orders", { token: pairing.token, body: order }), env);
+    assert.equal(response.status, 200);
+  }
+
+  const listResponse = await monitorWorker.fetch(jsonRequest("/api/orders?limit=20", { token: pairing.token }), env);
+  assert.equal(listResponse.status, 200);
+  const listed = await listResponse.json();
+  assert.equal(listed.orders.length, 2);
+  assert.deepEqual(new Set(listed.orders.map((order) => order.accountId)), new Set(["merchant-fr-one", "merchant-fr-two"]));
+
+  const pickup = await upsertOrder(db, {
+    ...firstOrder,
+    trackingState: "pickup_ready",
+    statusText: "Votre envoi retourné est disponible au bureau de poste.",
+    checkedAt: "2026-09-02T07:00:00.000Z"
+  });
+  const alertsResponse = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
+  assert.equal(alertsResponse.status, 200);
+  const alerts = await alertsResponse.json();
+  assert.equal(alerts.orders.length, 1);
+  assert.equal(alerts.orders[0].trackingState, "pickup_ready");
+
+  const acknowledgement = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/ack-pickup`, {
+    token: pairing.token,
+    body: {}
+  }), env);
+  assert.equal(acknowledgement.status, 200);
+  const acknowledgedAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
+  assert.deepEqual((await acknowledgedAlerts.json()).orders, []);
+
+  const resolvedResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/resolve`, {
+    token: env.ADMIN_TOKEN,
+    origin: "https://tracking.cheaply.fr",
+    body: { note: "Returned parcel physically received" }
+  }), env);
+  assert.equal(resolvedResponse.status, 200);
+  assert.equal((await resolvedResponse.json()).order.trackingState, "resolved");
+  const resolvedList = await monitorWorker.fetch(jsonRequest("/api/orders?view=resolved&limit=20", {
+    token: env.ADMIN_TOKEN,
+    origin: "https://tracking.cheaply.fr"
+  }), env);
+  assert.equal((await resolvedList.json()).orders.length, 1);
+
+  const revokeResponse = await monitorWorker.fetch(jsonRequest(`/api/devices/${encodeURIComponent(pairing.deviceId)}/revoke`, {
+    token: env.ADMIN_TOKEN,
+    origin: "https://tracking.cheaply.fr",
+    body: {}
+  }), env);
+  assert.equal(revokeResponse.status, 200);
+  const revokedResponse = await monitorWorker.fetch(jsonRequest("/api/orders?limit=20", { token: pairing.token }), env);
+  assert.equal(revokedResponse.status, 401);
 });
 
 test("does not let an older browser upload hide a newer pickup-required result", async (context) => {
