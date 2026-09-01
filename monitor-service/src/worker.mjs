@@ -222,6 +222,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     carrierId: clean(input.carrierId, 30),
     carrierLabel: clean(input.carrierLabel || input.carrier, 80),
     amazonUrl: safeAmazonOrderUrl(input.sourceUrl || input.amazonUrl, orderId),
+    orderDate: clean(input.orderDate, 100),
     shipDate: clean(input.shipDate, 100),
     deliverBy: clean(input.deliverBy, 180),
     itemValue: clean(input.itemValue, 80),
@@ -236,6 +237,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     statusText: clean(input.statusText, 1000),
     statusSummary: clean(input.statusSummary, 5000),
     checkedAt: clean(input.checkedAt, 40),
+    trackingSource: clean(input.trackingSource, 80),
     claimRecommended: input.claimRecommended ? 1 : 0,
     claimReason: claimReason === "none" || CLAIM_REASONS.has(claimReason) ? claimReason : "other",
     claimTitle: clean(input.claimTitle, 250),
@@ -287,12 +289,12 @@ export async function upsertOrder(db, input) {
   order.claimPayload = mergeClaimPayloadJson(existingPayload?.claim_payload, order.claimPayload);
   await db.prepare(`
     INSERT INTO orders (
-      record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, ship_date, deliver_by, item_value,
+      record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, order_date, ship_date, deliver_by, item_value,
       product_name, recipient_name, recipient_address1, recipient_address2, recipient_city,
-      recipient_postal_code, recipient_country, tracking_state, status_text, status_summary, checked_at,
+      recipient_postal_code, recipient_country, tracking_state, status_text, status_summary, checked_at, tracking_source,
       claim_recommended, claim_reason, claim_title, claim_status, claim_reference, claim_submitted_at, claim_payload,
       pickup_notified_at, resolved_at, resolution_note, first_seen_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(record_id) DO UPDATE SET
       account_id = excluded.account_id,
       account_name = CASE WHEN excluded.account_name != '' THEN excluded.account_name ELSE orders.account_name END,
@@ -301,6 +303,7 @@ export async function upsertOrder(db, input) {
       carrier_id = CASE WHEN excluded.carrier_id != '' THEN excluded.carrier_id ELSE orders.carrier_id END,
       carrier_label = CASE WHEN excluded.carrier_label != '' THEN excluded.carrier_label ELSE orders.carrier_label END,
       amazon_url = CASE WHEN excluded.amazon_url != '' THEN excluded.amazon_url ELSE orders.amazon_url END,
+      order_date = CASE WHEN excluded.order_date != '' THEN excluded.order_date ELSE orders.order_date END,
       ship_date = CASE WHEN excluded.ship_date != '' THEN excluded.ship_date ELSE orders.ship_date END,
       deliver_by = CASE WHEN excluded.deliver_by != '' THEN excluded.deliver_by ELSE orders.deliver_by END,
       item_value = CASE WHEN excluded.item_value != '' THEN excluded.item_value ELSE orders.item_value END,
@@ -335,6 +338,7 @@ export async function upsertOrder(db, input) {
         WHEN orders.checked_at = '' OR excluded.checked_at >= orders.checked_at THEN excluded.checked_at
         ELSE orders.checked_at
       END,
+      tracking_source = CASE WHEN excluded.tracking_source != '' THEN excluded.tracking_source ELSE orders.tracking_source END,
       claim_recommended = MAX(orders.claim_recommended, excluded.claim_recommended),
       claim_reason = CASE WHEN excluded.claim_reason != 'none' THEN excluded.claim_reason ELSE orders.claim_reason END,
       claim_title = CASE WHEN excluded.claim_title != '' THEN excluded.claim_title ELSE orders.claim_title END,
@@ -348,10 +352,10 @@ export async function upsertOrder(db, input) {
       updated_at = excluded.updated_at
   `).bind(
     order.recordId, order.accountId, order.accountName, order.marketplaceId, order.orderId,
-    order.trackingNumber, order.carrierId, order.carrierLabel, order.amazonUrl, order.shipDate,
+    order.trackingNumber, order.carrierId, order.carrierLabel, order.amazonUrl, order.orderDate, order.shipDate,
     order.deliverBy, order.itemValue, order.productName, order.recipientName, order.recipientAddress1,
     order.recipientAddress2, order.recipientCity, order.recipientPostalCode, order.recipientCountry,
-    order.trackingState, order.statusText, order.statusSummary, order.checkedAt, order.claimRecommended,
+    order.trackingState, order.statusText, order.statusSummary, order.checkedAt, order.trackingSource, order.claimRecommended,
     order.claimReason, order.claimTitle, order.claimStatus, order.claimReference, order.claimSubmittedAt, order.claimPayload,
     order.pickupNotifiedAt, order.resolvedAt, order.resolutionNote, order.firstSeenAt, order.updatedAt
   ).run();
@@ -698,17 +702,37 @@ export function shouldRunMorningMonitor(date = new Date()) {
   return parisDateParts(date).hour === "07";
 }
 
-async function sendMonitorJobs(env, jobs, runDate) {
+async function sendMonitorJobs(env, jobs, runDate, { force = false } = {}) {
   for (let index = 0; index < jobs.length; index += 100) {
     const chunk = jobs.slice(index, index + 100);
     await env.TRACKING_QUEUE.sendBatch(chunk.map((job) => ({
-      body: { runDate, recordId: job.record_id || job.recordId }
+      body: { runDate, recordId: job.record_id || job.recordId, ...(force ? { force: true } : {}) }
     })));
     const dispatchedAt = new Date().toISOString();
     await env.DB.batch(chunk.map((job) => env.DB.prepare(`UPDATE monitor_jobs SET status = 'dispatched', updated_at = ?
       WHERE run_date = ? AND record_id = ? AND status = 'queued'`)
       .bind(dispatchedAt, runDate, job.record_id || job.recordId)));
   }
+}
+
+export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
+  const row = await env.DB.prepare("SELECT record_id, order_id FROM orders WHERE record_id = ?").bind(recordId).first();
+  if (!row) {
+    const error = new Error("Tracked order not found.");
+    error.status = 404;
+    throw error;
+  }
+  const runDate = `manual-${date.getTime().toString(36)}-${crypto.randomUUID().slice(0, 4)}`;
+  const startedAt = date.toISOString();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count) VALUES (?, ?, '', 1)")
+      .bind(runDate, startedAt),
+    env.DB.prepare(`INSERT INTO monitor_jobs
+      (run_date, record_id, status, attempts, created_at, updated_at) VALUES (?, ?, 'queued', 0, ?, ?)`)
+      .bind(runDate, row.record_id, startedAt, startedAt)
+  ]);
+  await sendMonitorJobs(env, [row], runDate, { force: true });
+  return { ok: true, runDate, recordId: row.record_id, orderId: row.order_id, queuedCount: 1 };
 }
 
 export async function enqueueDailyMonitor(env, date = new Date()) {
@@ -746,8 +770,8 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
         ? row.tracking_state
         : result.trackingState;
     statements.push(
-      env.DB.prepare(`UPDATE orders SET tracking_state = ?, status_text = ?, status_summary = ?, checked_at = ?, updated_at = ? WHERE record_id = ?`)
-        .bind(state, result.statusText, result.statusSummary, now, now, row.record_id),
+      env.DB.prepare(`UPDATE orders SET tracking_state = ?, status_text = ?, status_summary = ?, checked_at = ?, tracking_source = ?, updated_at = ? WHERE record_id = ?`)
+        .bind(state, result.statusText, result.statusSummary, now, clean(result.source, 80), now, row.record_id),
       env.DB.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code) VALUES (?, ?, ?, ?, ?, ?)`)
         .bind(row.record_id, state, result.statusText, result.eventAt, now, result.rawCode)
     );
@@ -777,7 +801,7 @@ export async function processTrackingMessage(message, env, { fetchImpl = fetch }
   await env.DB.prepare("UPDATE monitor_jobs SET attempts = ?, updated_at = ? WHERE run_date = ? AND record_id = ?")
     .bind(attempt, new Date().toISOString(), runDate, recordId).run();
   const row = await env.DB.prepare("SELECT * FROM orders WHERE record_id = ?").bind(recordId).first();
-  if (!row || TERMINAL_STATES.has(row.tracking_state)) {
+  if (!row || (TERMINAL_STATES.has(row.tracking_state) && message.body?.force !== true)) {
     await finishMonitorJob(env, job);
     message.ack();
     return;
@@ -849,6 +873,7 @@ async function createClaimLaunch(request, env, recordId) {
     sourceUrl: row.amazon_url,
     orderId: row.order_id,
     trackingNumber: row.tracking_number,
+    orderDate: row.order_date,
     shipDate: row.ship_date,
     deliverBy: row.deliver_by,
     itemValue: row.item_value,
@@ -1049,6 +1074,15 @@ async function api(request, env, url) {
       return json({ ok: true, ...(await deleteResolvedOrder(env, decodeURIComponent(deleteMatch[1]))) }, 200, corsHeaders(request));
     } catch (error) {
       return json({ error: error.message }, 400, corsHeaders(request));
+    }
+  }
+  const recheckMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/recheck$/);
+  if (recheckMatch && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Dashboard administrator access required" }, 403, corsHeaders(request));
+    try {
+      return json(await enqueueOrderRecheck(env, decodeURIComponent(recheckMatch[1])), 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, error.status || 400, corsHeaders(request));
     }
   }
   const actionMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/(resolve|reopen|claim|ack-pickup)$/);
