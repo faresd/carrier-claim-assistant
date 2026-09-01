@@ -16,6 +16,7 @@ const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
 const dashboardStyles = read("monitor-service", "admin", "styles.css");
+const dashboardHeaders = read("monitor-service", "admin", "_headers");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
 const ssoPreflight = read("monitor-service", "scripts", "verify-sso-registration.mjs");
@@ -75,6 +76,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
     assert.match(dashboard, new RegExp(`data-view="${view}"`));
   }
   assert.match(dashboard, /id="account-filter"/);
+  assert.match(dashboard, /<th>Amazon account<\/th>/);
+  assert.match(dashboardScript, /class="account-name"/);
   assert.match(dashboard, /id="claim-dialog"/);
   assert.match(dashboard, /id="claim-reason"/);
   assert.match(dashboard, /id="claim-recipient-title"/);
@@ -97,10 +100,27 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
   assert.match(worker, /order_ids/);
+  assert.match(dashboard, /id="scroll-sentinel"/);
+  assert.match(dashboard, /id="scroll-status"/);
+  assert.match(dashboardScript, /new IntersectionObserver/);
+  assert.match(dashboardScript, /PAGE_SIZE = 100/);
+  assert.match(dashboardScript, /rootMargin: "600px 0px"/);
+  assert.match(dashboardScript, /params\.set\("summary", "1"\)/);
+  assert.doesNotMatch(dashboardScript, /offset < 100000/);
+  assert.match(worker, /dashboardOrderSummary/);
+  assert.match(worker, /GROUP BY tracking_state/);
+  assert.match(dashboardScript, /carrierTrackingUrl/);
+  assert.match(dashboardScript, /chronopost\.fr\/tracking-no-cms\/suivi-page/);
+  assert.match(dashboardScript, /laposte\.fr\/outils\/suivre-vos-envois\?code=/);
+  assert.match(dashboardScript, /Open official carrier tracking/);
 });
 
 test("dashboard assets are protected by a restrictive browser security policy", () => {
+  assert.match(dashboardHeaders, /Content-Security-Policy: default-src 'self'/);
+  assert.match(dashboardHeaders, /Cache-Control: no-store/);
+  assert.match(wrangler, /run_worker_first\s*=\s*true/);
   assert.match(worker, /content-security-policy/);
+  assert.match(worker, /next\.set\("cache-control", "no-store"\)/);
   assert.match(worker, /frame-ancestors 'none'/);
   assert.match(worker, /x-content-type-options/);
   assert.match(worker, /permissions-policy/);
@@ -153,6 +173,8 @@ test("monitor deployment fails before mutation when required production configur
   assert.match(ssoPreflight, /S256/);
   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
   assert.match(deployment, /node monitor-service\/scripts\/verify-laposte-access\.mjs/);
+  assert.match(deployment, /allow_pending_laposte/);
+  assert.match(lapostePreflight, /LAPOSTE_ALLOW_PENDING/);
   assert.match(lapostePreflight, /api\.laposte\.fr\/suivi\/v2\/idships/);
   assert.match(lapostePreflight, /X-Okapi-Key/);
   assert.match(lapostePreflight, /\[401, 403\]/);
