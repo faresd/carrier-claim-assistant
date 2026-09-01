@@ -224,6 +224,25 @@ test("pairing immediately backfills cached orders and marks them synchronized", 
   }
 });
 
+test("surfaces the monitor pairing endpoint error instead of a generic failure", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({ error: "Pairing code is invalid or expired." }), {
+    status: 400,
+    headers: { "content-type": "application/json" }
+  });
+  try {
+    const response = await send({
+      type: "PAIR_MONITOR_DEVICE",
+      serverUrl: "https://tracking.cheaply.fr",
+      code: "654321",
+      deviceName: "Cheaply.es Brave"
+    });
+    assert.deepEqual(response, { ok: false, error: "Pairing code is invalid or expired." });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("a server-deleted order is suppressed locally and never uploaded again", async () => {
   const originalFetch = global.fetch;
   const previousSettings = local.claimSettings;
