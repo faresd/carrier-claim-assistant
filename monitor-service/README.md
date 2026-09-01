@@ -60,6 +60,8 @@ Only central SSO administrators may enter by default. An optional `TRACKING_ADMI
 
 The monitor can call the OpenAI Responses API from the Worker when a carrier response is still ambiguous. Set the key as a Cloudflare Worker secret (for example, `wrangler secret put OPENAI_API_KEY`) and optionally set `OPENAI_MODEL`; the default is `gpt-5-mini`, a low-latency model with Responses and structured-output support. Keep the key server-side and rotate it through the Cloudflare/GitHub secret store.
 
+Production deployment verifies the configured credential with OpenAI's model metadata endpoint before mutating Cloudflare. This check runs no inference and fails without printing the secret when the credential is rejected or the configured model is unavailable.
+
 The model receives only the latest carrier message and a short carrier-history summary. It returns a strict JSON suggestion (`suggestedState`, confidence, explanation, and `needsHumanReview`). The deterministic classifier remains authoritative: AI output is appended as a review note and cannot mark a parcel delivered, declare a pickup-ready return, recommend a claim, or submit a claim. If the key is missing, the request times out, or the response is invalid, monitoring continues with the original carrier evidence.
 
 ## Pair another Chrome/Brave installation

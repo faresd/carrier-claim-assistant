@@ -49,6 +49,11 @@ jobs:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
           LAPOSTE_ALLOW_PENDING: ${{ inputs.allow_pending_laposte }}
         run: node monitor-service/scripts/verify-laposte-access.mjs
+      - name: Verify optional OpenAI API access
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5-mini
+        run: node monitor-service/scripts/verify-openai-access.mjs
       - name: Configure D1 database binding
         env:
           D1_DATABASE_ID: ${{ vars.CF_D1_DATABASE_ID }}
