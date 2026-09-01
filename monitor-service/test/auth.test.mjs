@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   beginDashboardLogin,
+  csrfTokenForSession,
   dashboardAuthConfig,
   finishDashboardLogin,
+  handleDashboardAuth,
   identityMayAdmin,
   safeReturnTo,
   signAuthPayload,
@@ -167,4 +169,29 @@ test("uses central admin role with an optional explicit email allow-list", () =>
     { role: "employee", email: "worker@example.com" },
     { TRACKING_ADMIN_EMAILS: "owner@example.com, worker@example.com" }
   ), true);
+});
+
+test("requires the signed dashboard session and CSRF token to log out", async () => {
+  const session = {
+    sub: "admin:owner@example.com",
+    email: "owner@example.com",
+    role: "admin",
+    name: "Owner",
+    jti: "logout-session-id",
+    exp: Math.floor(Date.now() / 1000) + 300
+  };
+  const signed = await signAuthPayload(session, SESSION_SECRET);
+  const url = new URL("https://tracking.cheaply.fr/api/auth/logout");
+
+  const anonymous = await handleDashboardAuth(new Request(url, { method: "POST" }), { SESSION_SECRET }, url);
+  assert.equal(anonymous.status, 401);
+  const cookie = `${dashboardAuthConfig.sessionCookie}=${signed}`;
+  const missingCsrf = await handleDashboardAuth(new Request(url, { method: "POST", headers: { cookie } }), { SESSION_SECRET }, url);
+  assert.equal(missingCsrf.status, 403);
+  const accepted = await handleDashboardAuth(new Request(url, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": await csrfTokenForSession(session, SESSION_SECRET) }
+  }), { SESSION_SECRET }, url);
+  assert.equal(accepted.status, 200);
+  assert.match(accepted.headers.get("set-cookie"), /Max-Age=0/);
 });

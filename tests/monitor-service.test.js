@@ -91,6 +91,7 @@ test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", 
   assert.match(dashboard, /Sign in with Cheaply/);
   assert.doesNotMatch(dashboard, /Admin token/);
   assert.doesNotMatch(dashboardScript, /carrierMonitorAdminToken.*getItem/);
+  assert.doesNotMatch(auth, /ADMIN_TOKEN/);
   assert.match(deployment, /MONITOR_SESSION_SECRET/);
   assert.match(deployment, /MONITOR_TRACKING_CLIENT_SECRET/);
   assert.match(deployment, /vars\.CF_ACCOUNT_ID/);

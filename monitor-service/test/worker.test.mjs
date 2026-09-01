@@ -11,6 +11,7 @@ import monitorWorker, {
   shouldRunMorningMonitor,
   upsertOrder
 } from "../src/worker.mjs";
+import { csrfTokenForSession, signAuthPayload } from "../src/auth.mjs";
 
 class D1SqliteAdapter {
   constructor(database) {
@@ -126,13 +127,24 @@ test("allows API CORS only for the production dashboard and real extension origi
 test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolves, and revokes access", async (context) => {
   const { database, db } = await monitorDatabase();
   context.after(() => database.close());
-  const env = { DB: db, ADMIN_TOKEN: "test-admin-token-with-at-least-32-characters" };
+  const sessionSecret = "test-session-secret-with-at-least-thirty-two-characters";
+  const env = { DB: db, SESSION_SECRET: sessionSecret };
   const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
-  const jsonRequest = (path, { token = "", body = null, origin = extensionOrigin, method = body == null ? "GET" : "POST" } = {}) => new Request(`https://tracking.cheaply.fr${path}`, {
+  const adminSession = {
+    sub: "admin:owner@example.com", email: "owner@example.com", role: "admin", name: "Owner",
+    jti: "worker-integration-session", exp: Math.floor(Date.now() / 1000) + 300
+  };
+  const adminCookie = `__Host-carrier_monitor_session=${await signAuthPayload(adminSession, sessionSecret)}`;
+  const adminCsrf = await csrfTokenForSession(adminSession, sessionSecret);
+  const jsonRequest = (path, {
+    token = "", body = null, origin = extensionOrigin, method = body == null ? "GET" : "POST", cookie = "", csrf = ""
+  } = {}) => new Request(`https://tracking.cheaply.fr${path}`, {
     method,
     headers: {
       origin,
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(cookie ? { cookie } : {}),
+      ...(csrf ? { "x-csrf-token": csrf } : {}),
       ...(body == null ? {} : { "content-type": "application/json" })
     },
     ...(body == null ? {} : { body: JSON.stringify(body) })
@@ -202,20 +214,22 @@ test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolv
   assert.deepEqual((await acknowledgedAlerts.json()).orders, []);
 
   const resolvedResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/resolve`, {
-    token: env.ADMIN_TOKEN,
+    cookie: adminCookie,
+    csrf: adminCsrf,
     origin: "https://tracking.cheaply.fr",
     body: { note: "Returned parcel physically received" }
   }), env);
   assert.equal(resolvedResponse.status, 200);
   assert.equal((await resolvedResponse.json()).order.trackingState, "resolved");
   const resolvedList = await monitorWorker.fetch(jsonRequest("/api/orders?view=resolved&limit=20", {
-    token: env.ADMIN_TOKEN,
+    cookie: adminCookie,
     origin: "https://tracking.cheaply.fr"
   }), env);
   assert.equal((await resolvedList.json()).orders.length, 1);
 
   const revokeResponse = await monitorWorker.fetch(jsonRequest(`/api/devices/${encodeURIComponent(pairing.deviceId)}/revoke`, {
-    token: env.ADMIN_TOKEN,
+    cookie: adminCookie,
+    csrf: adminCsrf,
     origin: "https://tracking.cheaply.fr",
     body: {}
   }), env);
