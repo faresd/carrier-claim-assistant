@@ -8,10 +8,12 @@ const path = require("node:path");
 const root = path.join(__dirname, "..");
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8");
 const worker = read("monitor-service", "src", "worker.mjs");
+const auth = read("monitor-service", "src", "auth.mjs");
 const migration = read("monitor-service", "migrations", "0001_initial.sql");
 const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
+const deployment = read(".github", "workflows", "deploy-monitor.yml");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
   assert.match(wrangler, /crons\s*=\s*\["\*\/15 \* \* \* \*"\]/);
@@ -66,4 +68,23 @@ test("dashboard assets are protected by a restrictive browser security policy", 
   assert.match(worker, /frame-ancestors 'none'/);
   assert.match(worker, /x-content-type-options/);
   assert.match(worker, /permissions-policy/);
+});
+
+test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", () => {
+  assert.match(auth, /AUTH_ORIGIN = "https:\/\/auth\.cheaply\.fr"/);
+  assert.match(auth, /CLIENT_ID = "tracking-web"/);
+  assert.match(auth, /code_challenge_method", "S256"/);
+  assert.match(auth, /RSASSA-PKCS1-v1_5/);
+  assert.match(auth, /__Host-carrier_monitor_session/);
+  assert.match(auth, /x-csrf-token/);
+  assert.match(worker, /handleDashboardAuth/);
+  assert.match(worker, /validDashboardCsrf/);
+  assert.match(dashboardScript, /\/api\/auth\/me/);
+  assert.match(dashboardScript, /\/api\/auth\/login/);
+  assert.match(dashboardScript, /\/api\/auth\/logout/);
+  assert.match(dashboard, /Sign in with Cheaply/);
+  assert.doesNotMatch(dashboard, /Admin token/);
+  assert.doesNotMatch(dashboardScript, /carrierMonitorAdminToken.*getItem/);
+  assert.match(deployment, /MONITOR_SESSION_SECRET/);
+  assert.match(deployment, /MONITOR_TRACKING_CLIENT_SECRET/);
 });
