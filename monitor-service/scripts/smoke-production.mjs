@@ -14,7 +14,7 @@ async function verifyOnce(origin, fetchImpl) {
   const dashboard = await fetchImpl(`${origin}/`, { redirect: "manual", headers: { accept: "text/html" } });
   const policy = dashboard.headers.get("content-security-policy") || "";
   if (dashboard.status !== 200 || !policy.includes("default-src 'self'") || !policy.includes("frame-ancestors 'none'")) {
-    throw new Error("Dashboard or its security policy is unavailable.");
+    throw new Error(`Dashboard or its security policy is unavailable (HTTP ${dashboard.status}; CSP ${policy ? policy.slice(0, 120) : "missing"}).`);
   }
 
   const orders = await fetchImpl(`${origin}/api/orders`, {
