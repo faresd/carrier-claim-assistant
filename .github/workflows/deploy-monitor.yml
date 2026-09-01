@@ -57,3 +57,7 @@ jobs:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
           SESSION_SECRET: ${{ secrets.MONITOR_SESSION_SECRET }}
           TRACKING_CLIENT_SECRET: ${{ secrets.MONITOR_TRACKING_CLIENT_SECRET }}
+      - name: Verify the live dashboard and authentication boundary
+        env:
+          MONITOR_BASE_URL: https://tracking.cheaply.fr
+        run: node monitor-service/scripts/smoke-production.mjs
