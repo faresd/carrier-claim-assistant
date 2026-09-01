@@ -28,6 +28,17 @@ test("detects La Poste's live Message envoyé confirmation without inventing an 
   assert.match(result.confirmationText, /Message envoyé/i);
 });
 
+test("detects La Poste's confirmation page with a visible COL reference", () => {
+  const result = detectClaimSuccess("laposte", `
+    Message envoyé !
+    Merci de votre confiance. Votre message a été transmis à nos équipes.
+    Votre référence : COL-91855121
+    Vous retrouverez également ce numéro dans l'e-mail de confirmation de l'envoi de votre demande.
+  `);
+  assert.equal(result.reference, "COL-91855121");
+  assert.match(result.confirmationText, /Message envoyé/i);
+});
+
 test("detects a successful Chronopost ticket without inventing a reference", () => {
   const result = detectClaimSuccess("chronopost", "Votre ticket a été créé et transmis à notre service client.");
   assert.equal(result.reference, "");

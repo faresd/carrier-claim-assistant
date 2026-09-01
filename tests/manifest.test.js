@@ -18,7 +18,8 @@ const optionsHtml = fs.readFileSync(path.join(root, "src", "options.html"), "utf
 test("manifest wires the Amazon order assistant and supported carrier pages", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.version, packageJson.version);
-  assert.deepEqual(manifest.permissions, ["storage", "alarms"]);
+  assert.deepEqual(manifest.permissions, ["storage", "alarms", "notifications"]);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://tracking.cheaply.fr/*"]);
 
   const amazon = manifest.content_scripts.find((entry) =>
     entry.matches.includes("https://sellercentral.amazon.fr/orders-v3/order/*")
@@ -27,6 +28,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
     "src/shared/order-parser.js",
     "src/shared/carrier-rules.js",
     "src/shared/claim-outcome.js",
+    "src/shared/tracking-records.js",
     "src/order-auditor.js",
     "src/amazon.js"
   ]);
@@ -37,6 +39,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
   assert.deepEqual(ordersList.js, [
     "src/shared/carrier-rules.js",
     "src/shared/order-list-rules.js",
+    "src/shared/tracking-records.js",
     "src/orders-list.js"
   ]);
   assert.ok(ordersList.css.includes("src/assistant.css"));
@@ -68,6 +71,12 @@ test("all manifest script and stylesheet paths exist", () => {
   }
 });
 
+test("builds a reproducible store archive", () => {
+  const packageScript = fs.readFileSync(path.join(root, "scripts", "package-extension.sh"), "utf8");
+  assert.match(packageScript, /touch -t 198001010000/);
+  assert.match(packageScript, /sort \| zip -X/);
+});
+
 test("ships portable extension icons and no personal sender defaults", () => {
   assert.deepEqual(manifest.icons, {
     16: "icons/icon16.png",
@@ -86,6 +95,11 @@ test("ships portable extension icons and no personal sender defaults", () => {
     const input = optionsHtml.match(new RegExp(`<input[^>]+name="${field}"[^>]*>`))?.[0] || "";
     assert.doesNotMatch(input, /\svalue="[^"]+"/);
   }
+});
+
+test("fixes browser pairing to the production monitor origin", () => {
+  const options = fs.readFileSync(path.join(root, "src/options.html"), "utf8");
+  assert.match(options, /name="monitorServerUrl"[^>]+value="https:\/\/tracking\.cheaply\.fr"[^>]+readonly/);
 });
 
 test("includes privacy-safe Chrome Web Store graphics at the required dimensions", () => {
@@ -121,8 +135,17 @@ test("renders recipient name and postal address beside the title selector", () =
 test("persists successful claims to Seller Notes and a sent button state", () => {
   assert.match(amazonScript, /Claim sent ·/);
   assert.match(amazonScript, /claimOutcomesByOrder/);
+  assert.match(amazonScript, /type:\s*"GET_TRACKED_RECORDS"/);
+  assert.match(amazonScript, /claimOutcomeForRecord/);
   assert.match(amazonScript, /sellerNotesControl/);
+  assert.match(amazonScript, /sellerNotesSaveButton/);
+  assert.match(amazonScript, /if \(saveButton\) saveButton\.click\(\)/);
+  assert.match(amazonScript, /Record existing claim/);
   assert.match(assistantCss, /data-state="sent"/);
+});
+
+test("clears prior shipment state before registering an Amazon SPA navigation", () => {
+  assert.match(amazonScript, /if \(shipmentChanged\) resetShipmentState\(\);\s*chrome\.runtime\.sendMessage\(\{\s*type: "REGISTER_TRACKED_ORDER"/);
 });
 
 test("makes both carrier confirmation panels collapsible", () => {
@@ -135,6 +158,7 @@ test("hides the La Poste pause control after successful submission", () => {
   assert.match(laposteScript, /pauseButton\.hidden = true/);
   assert.doesNotMatch(laposteScript, />Ⅱ<\/button>/);
   assert.match(laposteScript, /aria-label="Pause automation"/);
+  assert.match(laposteScript, /finishSuccessfulSubmission\(\)\) return;\s*if \(state\.paused\) return;/);
 });
 
 test("uses the contracted Chronopost shipment lookup without filling both lookup keys", () => {
@@ -154,6 +178,8 @@ test("wires the bounded Manage Orders audit dashboard", () => {
   assert.match(ordersListScript, /START_ORDER_AUDIT/);
   assert.match(ordersListScript, /RELEASE_ORDER_AUDIT_WORKER/);
   assert.match(ordersListScript, /Last checked:/);
+  assert.match(ordersListScript, /observedLocation: `\$\{location\.pathname\}\$\{location\.search\}`/);
+  assert.match(ordersListScript, /visibleOrderIds\.has\(orderId\)/);
   assert.match(auditorScript, /ORDER_AUDIT_DETAILS/);
   assert.match(assistantCss, /\.lpca-order-badge/);
   assert.match(assistantCss, /\.lpca-order-status-time/);

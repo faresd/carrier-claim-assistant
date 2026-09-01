@@ -5,12 +5,14 @@
 
   const rules = globalThis.CarrierClaimRules;
   const listRules = globalThis.CarrierOrderListRules;
+  const trackingRecords = globalThis.CarrierTrackingRecords;
   const MAX_CONCURRENCY = 1;
   const CACHE_HOURS = 12;
   const state = {
     rows: new Map(),
     outcomes: {},
     audits: {},
+    records: {},
     settings: {},
     queue: [],
     queued: new Set(),
@@ -19,7 +21,9 @@
     paused: false,
     initialized: false,
     workerReleasePending: false,
-    observedPath: location.pathname
+    remoteLookupQueued: new Set(),
+    remoteLookupTimer: null,
+    observedLocation: `${location.pathname}${location.search}`
   };
 
   function eligibility() {
@@ -28,6 +32,56 @@
     if (location.pathname.includes("/canceled")) return "canceled";
     if (location.pathname.includes("/pending")) return "pending";
     return "other";
+  }
+
+  function sellerContextFromUrl(value) {
+    try {
+      const url = new URL(value || "", location.origin);
+      return {
+        sellerAccountId: url.searchParams.get("mons_sel_mcid") || url.searchParams.get("merchantId") || "",
+        marketplaceId: url.searchParams.get("mons_sel_mkid") || url.searchParams.get("marketplaceId") || ""
+      };
+    } catch {
+      return { sellerAccountId: "", marketplaceId: "" };
+    }
+  }
+
+  function entryIdentity(entry, order = null) {
+    return {
+      orderId: entry?.orderId || order?.orderId || "",
+      trackingNumber: order?.trackingNumber || "",
+      sellerAccountId: order?.sellerAccountId || entry?.sellerAccountId || "sellercentral.amazon.fr",
+      marketplaceId: order?.marketplaceId || entry?.marketplaceId || "A13V1IB3VIYZZH"
+    };
+  }
+
+  function recordForEntry(entry) {
+    return trackingRecords.findRecord(state.records, entryIdentity(entry));
+  }
+
+  function localOutcomeForEntry(entry) {
+    return trackingRecords.findRecord(state.outcomes, entryIdentity(entry));
+  }
+
+  function claimOutcomeForEntry(entry, record = recordForEntry(entry)) {
+    const local = localOutcomeForEntry(entry);
+    return local || trackingRecords.claimOutcomeForRecord(record);
+  }
+
+  function auditEntryFor(entry) {
+    const exactKey = trackingRecords.recordKey(entryIdentity(entry));
+    if (state.audits[exactKey]) return { key: exactKey, value: state.audits[exactKey] };
+    if (state.audits[entry.orderId]) return { key: entry.orderId, value: state.audits[entry.orderId] };
+    const candidates = Object.entries(state.audits).filter(([, audit]) => audit?.order?.orderId === entry.orderId);
+    if (candidates.length === 1) return { key: candidates[0][0], value: candidates[0][1] };
+    const exact = candidates.find(([, audit]) => trackingRecords.recordKey(audit.order) === exactKey);
+    return exact ? { key: exact[0], value: exact[1] } : null;
+  }
+
+  function deleteAuditForEntry(entry) {
+    const saved = auditEntryFor(entry);
+    if (saved) delete state.audits[saved.key];
+    delete state.audits[entry.orderId];
   }
 
   function ensureToolbar() {
@@ -55,8 +109,8 @@
       updateToolbar();
     });
     toolbar.querySelector("#lpca-orders-rescan").addEventListener("click", () => {
-      for (const orderId of state.rows.keys()) {
-        delete state.audits[orderId];
+      for (const [orderId, entry] of state.rows) {
+        deleteAuditForEntry(entry);
         enqueue(orderId, true);
       }
       chrome.storage.local.set({ orderAuditResultsByOrder: state.audits });
@@ -115,8 +169,20 @@
   function renderOrder(orderId) {
     const entry = state.rows.get(orderId);
     if (!entry) return;
-    const outcome = state.outcomes[orderId];
-    const audit = state.audits[orderId];
+    const trackingRecord = recordForEntry(entry);
+    const outcome = claimOutcomeForEntry(entry, trackingRecord);
+    const auditEntry = auditEntryFor(entry);
+    const audit = auditEntry?.value;
+    const returnBadge = trackingRecords.badgeForRecord(trackingRecord);
+    if (returnBadge) {
+      setBadge(
+        entry,
+        returnBadge,
+        [trackingRecord.trackingNumber, trackingRecord.statusText].filter(Boolean).join(" · "),
+        { checkedAt: trackingRecord.checkedAt, submittedAt: outcome?.submittedAt }
+      );
+      return;
+    }
     if (outcome) {
       setBadge(
         entry,
@@ -135,7 +201,7 @@
       const detectedCarrierId = rules.detectCarrier(audit.order).id;
       const auditedCarrierId = audit.result?.carrier || audit.recommendation?.carrier?.id || "";
       if (auditedCarrierId && detectedCarrierId !== auditedCarrierId) {
-        delete state.audits[orderId];
+        deleteAuditForEntry(entry);
         chrome.storage.local.set({ orderAuditResultsByOrder: state.audits });
         setBadge(entry, listRules.badgeFor({}), "Carrier corrected from the tracking-number format");
         enqueue(orderId, true);
@@ -160,29 +226,67 @@
 
   function discoverRows() {
     ensureToolbar();
-    if (location.pathname !== state.observedPath) {
-      state.observedPath = location.pathname;
+    const currentLocation = `${location.pathname}${location.search}`;
+    if (currentLocation !== state.observedLocation) {
+      state.observedLocation = currentLocation;
       state.rows.clear();
       state.queue = [];
       state.queued.clear();
     }
+    const discoveredOrderIds = [];
+    const visibleOrderIds = new Set();
     const links = [...document.querySelectorAll('a[href*="/orders-v3/order/"]')];
+    const pageContext = sellerContextFromUrl(location.href);
     for (const link of links) {
       const orderId = listRules.orderIdFromHref(link.href);
       if (!orderId || link.textContent.trim() !== orderId) continue;
       const row = link.closest("tr");
       if (!row) continue;
-      state.rows.set(orderId, { orderId, link, row });
+      visibleOrderIds.add(orderId);
+      if (!state.rows.has(orderId)) discoveredOrderIds.push(orderId);
+      const linkContext = sellerContextFromUrl(link.href);
+      const previous = state.rows.get(orderId) || {};
+      state.rows.set(orderId, {
+        ...previous,
+        orderId,
+        link,
+        row,
+        sellerAccountId: linkContext.sellerAccountId || pageContext.sellerAccountId || previous.sellerAccountId || "sellercentral.amazon.fr",
+        marketplaceId: linkContext.marketplaceId || pageContext.marketplaceId || previous.marketplaceId || "A13V1IB3VIYZZH"
+      });
       renderOrder(orderId);
     }
+    for (const orderId of state.rows.keys()) {
+      if (!visibleOrderIds.has(orderId)) state.rows.delete(orderId);
+    }
+    state.queue = state.queue.filter((orderId) => visibleOrderIds.has(orderId));
+    for (const orderId of state.queued) {
+      if (!visibleOrderIds.has(orderId)) state.queued.delete(orderId);
+    }
+    if (state.initialized && discoveredOrderIds.length) scheduleRemoteLookup(discoveredOrderIds);
     updateToolbar();
     pumpQueue();
   }
 
+  function scheduleRemoteLookup(orderIds) {
+    for (const orderId of orderIds) state.remoteLookupQueued.add(orderId);
+    clearTimeout(state.remoteLookupTimer);
+    state.remoteLookupTimer = setTimeout(async () => {
+      const wanted = [...state.remoteLookupQueued];
+      state.remoteLookupQueued.clear();
+      const remote = await chrome.runtime.sendMessage({ type: "GET_TRACKED_RECORDS", refresh: true, orderIds: wanted }).catch(() => null);
+      if (!remote?.ok) return;
+      state.records = remote.records || state.records;
+      for (const orderId of wanted) renderOrder(orderId);
+    }, 250);
+  }
+
   function enqueue(orderId, force = false) {
-    if (eligibility() !== "shipped" || state.outcomes[orderId]) return;
+    const entry = state.rows.get(orderId);
+    if (!entry || eligibility() !== "shipped" || claimOutcomeForEntry(entry)) return;
+    if (!force && trackingRecords.badgeForRecord(recordForEntry(entry))) return;
     if (state.queued.has(orderId) || state.starting.has(orderId) || [...state.active.values()].includes(orderId)) return;
-    if (!force && listRules.auditIsFresh(state.audits[orderId], CACHE_HOURS)) return;
+    if (!force && listRules.auditIsFresh(auditEntryFor(entry)?.value, CACHE_HOURS)) return;
     state.queue.push(orderId);
     state.queued.add(orderId);
   }
@@ -218,7 +322,8 @@
     while (state.active.size + state.starting.size < MAX_CONCURRENCY && state.queue.length) {
       const orderId = state.queue.shift();
       state.queued.delete(orderId);
-      if (!state.rows.has(orderId) || state.outcomes[orderId]) continue;
+      const entry = state.rows.get(orderId);
+      if (!entry || claimOutcomeForEntry(entry)) continue;
       startAudit(orderId);
     }
     if (!state.queue.length && !state.starting.size && !state.active.size && !state.workerReleasePending) {
@@ -230,7 +335,14 @@
   }
 
   async function saveAudit(orderId, audit) {
-    state.audits[orderId] = audit;
+    const entry = state.rows.get(orderId);
+    if (entry && audit?.order) {
+      entry.sellerAccountId = audit.order.sellerAccountId || entry.sellerAccountId;
+      entry.marketplaceId = audit.order.marketplaceId || entry.marketplaceId;
+    }
+    const key = trackingRecords.recordKey(entryIdentity(entry || { orderId }, audit?.order)) || orderId;
+    if (entry) deleteAuditForEntry(entry);
+    state.audits[key] = audit;
     const entries = Object.entries(state.audits);
     const deliveredEntries = entries.filter(([, savedAudit]) => listRules.auditIsTerminalDelivered(savedAudit));
     const recentEntries = entries
@@ -247,7 +359,7 @@
     const count = (wanted) => badges.filter((badge) => badge.dataset.state === wanted).length;
     const checked = badges.filter((badge) => !["queued", "checking"].includes(badge.dataset.state)).length;
     const summary = eligibility() === "shipped"
-      ? `${checked}/${state.rows.size} checked · ${count("recommended")} recommended · ${count("sent")} sent · ${state.active.size + state.starting.size} active`
+      ? `${checked}/${state.rows.size} checked · ${count("pickup")} pickup · ${count("returned")} returning · ${count("recommended")} investigate · ${count("sent")} sent · ${state.active.size + state.starting.size} active`
       : `${state.rows.size} orders · claims are checked after shipment`;
     toolbar.querySelector("#lpca-orders-summary").textContent = summary;
     toolbar.querySelector("#lpca-orders-pause").disabled = eligibility() !== "shipped";
@@ -274,16 +386,24 @@
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || !changes.claimOutcomesByOrder) return;
-    state.outcomes = changes.claimOutcomesByOrder.newValue || {};
+    if (areaName !== "local") return;
+    if (changes.claimOutcomesByOrder) state.outcomes = trackingRecords.rekeyRecords(changes.claimOutcomesByOrder.newValue || {});
+    if (changes.trackedOrdersByOrder) state.records = trackingRecords.rekeyRecords(changes.trackedOrdersByOrder.newValue || {});
+    if (!changes.claimOutcomesByOrder && !changes.trackedOrdersByOrder) return;
     for (const orderId of state.rows.keys()) renderOrder(orderId);
   });
 
   async function init() {
-    const stored = await chrome.storage.local.get(["claimOutcomesByOrder", "orderAuditResultsByOrder", "claimSettings"]);
-    state.outcomes = stored.claimOutcomesByOrder || {};
+    const stored = await chrome.storage.local.get(["claimOutcomesByOrder", "orderAuditResultsByOrder", "claimSettings", "trackedOrdersByOrder"]);
+    state.outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
     state.audits = stored.orderAuditResultsByOrder || {};
     state.settings = stored.claimSettings || {};
+    state.records = trackingRecords.rekeyRecords(stored.trackedOrdersByOrder || {});
+    discoverRows();
+    const remote = await chrome.runtime.sendMessage({ type: "GET_TRACKED_RECORDS", refresh: true, orderIds: [...state.rows.keys()] }).catch(() => null);
+    if (remote?.ok) state.records = remote.records || state.records;
+    state.queue = [];
+    state.queued.clear();
     state.initialized = true;
     discoverRows();
     let timer;

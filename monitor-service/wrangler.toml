@@ -1,0 +1,31 @@
+name = "carrier-return-monitor"
+main = "src/worker.mjs"
+compatibility_date = "2026-08-31"
+
+[assets]
+directory = "./admin"
+binding = "ASSETS"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[routes]]
+pattern = "tracking.cheaply.fr"
+custom_domain = true
+
+[[queues.producers]]
+binding = "TRACKING_QUEUE"
+queue = "carrier-tracking-checks"
+
+[[queues.consumers]]
+queue = "carrier-tracking-checks"
+max_batch_size = 8
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 1
+
+[[d1_databases]]
+binding = "DB"
+database_name = "carrier-return-monitor"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"

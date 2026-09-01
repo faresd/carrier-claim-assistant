@@ -15,7 +15,7 @@
     if (/^X[A-Z]\d{9}JB$/.test(trackingNumber)) {
       return { id: "chronopost", label: "Chronopost", supported: true, source: "tracking_number" };
     }
-    if (/^(?:6A|9L|6C|9V|8R|6G|6V|6H|9H|6M|9M|CM|CG|CI|8S|0M|1M|8B|8E|7E)\d{11}$/.test(trackingNumber)) {
+    if (/^(?:6A|9L|6C|9V|8R|8U|6G|6V|6H|9H|6M|9M|CM|CG|CI|8S|0M|1M|8B|8E|7E)\d{11}$/.test(trackingNumber)) {
       return { id: "laposte", label: "Colissimo", supported: true, source: "tracking_number" };
     }
     return null;

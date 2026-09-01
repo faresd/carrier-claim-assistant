@@ -1,6 +1,6 @@
 # Privacy Policy — Carrier Claim Assistant
 
-Effective date: 24 August 2026
+Effective date: 1 September 2026
 
 Carrier Claim Assistant is a browser extension that helps Amazon Seller Central operators check official carrier status and prepare claims for Colissimo, La Poste, and Chronopost shipments.
 
@@ -23,12 +23,17 @@ Data is used only to provide the extension's visible features:
 - prefill a user-requested claim on the corresponding official carrier site;
 - save a verified claim result to Seller Notes and prevent duplicate claims;
 - cache delivery checks, including terminal delivered results, in the browser.
+- when the operator explicitly enables private cloud sync, maintain a multi-account order history, run daily official tracking checks, identify returned parcels waiting for pickup, and synchronize claim/resolution state with the configured monitor service.
 
-The extension does not send order, recipient, sender, or claim data to the extension developer. A tracking number is sent only to the official La Poste or Chronopost tracking page. When the user starts and confirms a claim, the required claim data is submitted directly to the selected carrier's official website.
+The extension does not send order, recipient, sender, or claim data to the extension developer. Without cloud sync, a tracking number is sent only to the official La Poste or Chronopost tracking page. When cloud sync is enabled by the operator, order, recipient, tracking, status, claim, merchant-account, and resolution details are sent to that operator's configured private monitor server. The monitor server sends tracking numbers to La Poste's official Suivi v2 API. When the user starts and confirms a claim, the required claim data is submitted directly to the selected carrier's official website.
 
 ## Storage and retention
 
 Sender settings, cached audit results, and successful claim outcomes are stored in browser extension storage on the user's device. Pending claim details use browser session storage. Delivered results may be kept until the user clears extension data or uninstalls the extension so that repeated carrier checks are unnecessary.
+
+When cloud sync is enabled, synchronized records—including the sender, recipient, shipment, item, and editable claim-preparation fields needed for the operator's carrier workflow—remain in the configured monitor database until an authenticated administrator deletes them or removes the service/database. Marking a returned parcel as received moves it to Resolved and stops future tracking checks; it does not automatically delete the history. The dashboard can export the stored order, carrier-event, seller-account, and monitor-run history as JSON. A resolved order and its related tracking history can then be permanently deleted with explicit confirmation; active orders cannot be deleted through this control. After deletion, the monitor retains only a minimal marker containing the seller-account identifier, marketplace identifier, Amazon order number, internal record identifier, and deletion time. It contains no tracking number, recipient, address, item, status, claim, or carrier-event data and is used only to prevent an older paired browser from uploading the deleted record again. The marker remains until the operator removes the monitor database or service. Browser pairing codes and claim-launch links expire after ten minutes. Per-device tokens remain until revoked or the monitor database is removed.
+
+The monitor accepts browser API requests only from `https://tracking.cheaply.fr` and valid `chrome-extension://` origins. Cross-origin preflight requests from ordinary websites are rejected; bearer-token and SSO authorization checks still apply independently.
 
 ## Sharing and sale
 
@@ -36,7 +41,7 @@ The extension has no analytics, advertising, or third-party tracking libraries. 
 
 ## Security and user control
 
-The extension uses Chrome Manifest V3 permissions limited to the supported Amazon and carrier pages. It does not collect account passwords or payment details. Final carrier submission requires explicit confirmation. Users can edit sender settings, recheck cached status, clear browser extension data, or uninstall the extension at any time.
+The extension uses Chrome Manifest V3 permissions for storage, scheduled checks, notifications, supported Amazon/carrier pages, and optional access to `https://tracking.cheaply.fr` only. The browser asks before granting that monitor access. Carrier API and cloud-administration secrets stay on the server. The monitor dashboard uses the operator's existing Cheaply SSO identity and a secure HttpOnly session; the extension never receives that dashboard session. Per-browser upload tokens can be revoked independently. The extension does not collect account passwords or payment details. Final carrier submission requires explicit confirmation. Users can disable cloud sync, edit settings, recheck cached status, clear browser extension data, or uninstall the extension at any time.
 
 ## Changes
 
@@ -45,4 +50,3 @@ Material changes to this policy will be published with the source repository and
 ## Contact
 
 The publisher's support email is provided on the Chrome Web Store listing.
-

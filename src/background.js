@@ -1,10 +1,15 @@
 "use strict";
 
-if (typeof importScripts === "function") importScripts("shared/carrier-rules.js", "shared/claim-outcome.js");
+if (typeof importScripts === "function") importScripts("shared/carrier-rules.js", "shared/claim-outcome.js", "shared/tracking-records.js");
 
 const carrierRules = globalThis.CarrierClaimRules;
 const outcomeRules = globalThis.CarrierClaimOutcomeRules;
+const trackingRecords = globalThis.CarrierTrackingRecords;
 const CLAIM_OUTCOMES_KEY = "claimOutcomesByOrder";
+const TRACKED_ORDERS_KEY = "trackedOrdersByOrder";
+const ORDER_AUDITS_KEY = "orderAuditResultsByOrder";
+const MONITOR_ALERT_ALARM = "carrierReturnMonitorAlerts";
+const MONITOR_ORIGIN = "https://tracking.cheaply.fr";
 
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
@@ -34,20 +39,375 @@ const DEFAULT_SENDER_PROFILE = {
 const DEFAULT_CLAIM_SETTINGS = {
   autoStatusCheck: true,
   chronopostStaleHours: 48,
-  laposteOverdueDays: 7
+  laposteOverdueDays: 7,
+  cloudSyncEnabled: false,
+  monitorServerUrl: "https://tracking.cheaply.fr",
+  monitorAccessToken: "",
+  pickupNotifications: true
 };
 
 const STATUS_TIMEOUT_MS = 60000;
 const ORDER_AUDIT_LOAD_TIMEOUT_MS = 30000;
+const SELLER_NOTE_RETRY_ATTEMPTS = 24;
+const SELLER_NOTE_RETRY_DELAY_MS = 750;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
-  const stored = await chrome.storage.local.get(["senderProfile", "claimSettings"]);
+  const stored = await chrome.storage.local.get([
+    "senderProfile", "claimSettings", TRACKED_ORDERS_KEY, CLAIM_OUTCOMES_KEY, ORDER_AUDITS_KEY
+  ]);
+  const previousSettings = stored.claimSettings || {};
+  let monitorOriginChanged = false;
+  if (previousSettings.monitorServerUrl) {
+    try {
+      monitorOriginChanged = new URL(previousSettings.monitorServerUrl).origin !== MONITOR_ORIGIN;
+    } catch {
+      monitorOriginChanged = true;
+    }
+  }
   await chrome.storage.local.set({
     senderProfile: { ...DEFAULT_SENDER_PROFILE, ...(stored.senderProfile || {}) },
-    claimSettings: { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) }
+    claimSettings: {
+      ...DEFAULT_CLAIM_SETTINGS,
+      ...previousSettings,
+      monitorServerUrl: MONITOR_ORIGIN,
+      cloudSyncEnabled: monitorOriginChanged ? false : previousSettings.cloudSyncEnabled === true,
+      monitorAccessToken: monitorOriginChanged ? "" : String(previousSettings.monitorAccessToken || "")
+    },
+    [TRACKED_ORDERS_KEY]: trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {}),
+    [CLAIM_OUTCOMES_KEY]: trackingRecords.rekeyRecords(stored[CLAIM_OUTCOMES_KEY] || {}),
+    [ORDER_AUDITS_KEY]: trackingRecords.rekeyRecords(stored[ORDER_AUDITS_KEY] || {})
   });
+  await scheduleMonitorAlertPolling();
   if (details.reason === "install") await chrome.runtime.openOptionsPage();
 });
+
+chrome.runtime.onStartup?.addListener(() => {
+  scheduleMonitorAlertPolling().then(() => Promise.allSettled([
+    syncPendingTrackingRecords(),
+    refreshMonitorAlerts()
+  ])).catch(() => {});
+});
+
+async function scheduleMonitorAlertPolling() {
+  await chrome.alarms.create(MONITOR_ALERT_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
+}
+
+function normalizedMonitorConfig(settings = {}) {
+  let serverUrl = "";
+  try {
+    const url = new URL(String(settings.monitorServerUrl || "").trim());
+    if (url.protocol === "https:" && url.origin === MONITOR_ORIGIN) serverUrl = url.origin;
+  } catch {}
+  return {
+    enabled: settings.cloudSyncEnabled === true && Boolean(serverUrl && settings.monitorAccessToken),
+    serverUrl,
+    token: String(settings.monitorAccessToken || "").trim(),
+    pickupNotifications: settings.pickupNotifications !== false
+  };
+}
+
+async function monitorConfig(overrides = null) {
+  if (overrides) return normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: overrides.serverUrl, monitorAccessToken: overrides.token });
+  const stored = await chrome.storage.local.get("claimSettings");
+  return normalizedMonitorConfig({ ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) });
+}
+
+async function monitorRequest(path, options = {}, overrides = null) {
+  const config = await monitorConfig(overrides);
+  if (!config.enabled) throw new Error("Return monitor cloud sync is not configured.");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${config.serverUrl}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${config.token}`,
+        "content-type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && !overrides) {
+      const stored = await chrome.storage.local.get("claimSettings");
+      await chrome.storage.local.set({
+        claimSettings: {
+          ...DEFAULT_CLAIM_SETTINGS,
+          ...(stored.claimSettings || {}),
+          cloudSyncEnabled: false,
+          monitorAccessToken: ""
+        }
+      });
+      throw new Error("This browser's return-monitor access was revoked. Pair it again in Settings.");
+    }
+    if (response.status === 410 && payload.deleted === true) {
+      const error = new Error(payload.error || "This resolved order was permanently deleted from the return monitor.");
+      error.permanentlyDeleted = true;
+      throw error;
+    }
+    if (!response.ok) throw new Error(payload.error || `Monitor server returned HTTP ${response.status}.`);
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function testMonitorConnection(serverUrl, token = "") {
+  const config = normalizedMonitorConfig({
+    cloudSyncEnabled: true,
+    monitorServerUrl: serverUrl,
+    monitorAccessToken: token || "health-check"
+  });
+  if (!config.serverUrl) throw new Error("Enter a secure HTTPS monitor server URL.");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const headers = token ? { authorization: `Bearer ${String(token).trim()}` } : {};
+    const response = await fetch(`${config.serverUrl}/api/health`, { headers, signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok !== true) throw new Error(payload.error || `Monitor server returned HTTP ${response.status}.`);
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildClaimPayload(order, record, senderProfile, recommendation, result = {}) {
+  const reason = recommendation?.reason === "none" ? "other" : recommendation?.reason || record.claimReason || "other";
+  const recipientTitle = carrierRules.detectRecipientTitle(order.recipientName) || "";
+  return {
+    version: 1,
+    carrier: record.carrierId,
+    reason,
+    reasonContract: carrierRules.carrierReasonContract(record.carrierId, reason),
+    details: carrierRules.buildClaimMessage(order, { ...recommendation, reason }).slice(0, 500),
+    recommendation: {
+      recommended: Boolean(recommendation?.recommended),
+      reason,
+      title: recommendation?.title || record.claimTitle || "",
+      statusText: recommendation?.statusText || record.statusText || ""
+    },
+    trackingStatus: {
+      statusText: result.statusText || record.statusText || "",
+      summaryText: result.summaryText || record.statusSummary || "",
+      checkedAt: result.checkedAt || record.checkedAt || ""
+    },
+    order: {
+      sourceUrl: order.sourceUrl || "",
+      orderId: order.orderId || "",
+      trackingNumber: order.trackingNumber || "",
+      shipDate: order.shipDate || "",
+      deliverBy: order.deliverBy || "",
+      carrier: order.carrier || record.carrierLabel || "",
+      shippingService: order.shippingService || "",
+      itemValue: order.itemValue || "",
+      quantity: order.quantity || "1",
+      productName: order.productName || "",
+      asin: order.asin || "",
+      sku: order.sku || "",
+      recipientName: order.recipientName || "",
+      recipientAddress1: order.recipientAddress1 || "",
+      recipientAddress2: order.recipientAddress2 || "",
+      recipientCity: order.recipientCity || "",
+      recipientPostalCode: order.recipientPostalCode || "",
+      recipientCountry: order.recipientCountry || "",
+      sellerAccountId: record.sellerAccountId || "",
+      sellerAccountName: record.sellerAccountName || "",
+      marketplaceId: record.marketplaceId || ""
+    },
+    sender: { ...DEFAULT_SENDER_PROFILE, ...(senderProfile || {}) },
+    recipientTitle,
+    executionMode: "automatic"
+  };
+}
+
+async function saveTrackingRecord(order, result = {}, recommendation = null, outcome = null) {
+  if (!order?.orderId || !order?.trackingNumber || !trackingRecords) return null;
+  const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", "senderProfile", CLAIM_OUTCOMES_KEY]);
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  const previousEntry = trackingRecords.findRecordEntry(records, order);
+  const previous = previousEntry?.value || null;
+  const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
+  const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
+  const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
+  const previousIdentity = trackingRecords.identity(previous || {});
+  const orderIdentity = trackingRecords.identity(order);
+  const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+  const accountWasDisambiguated = previous && fallbackAccounts.has(previousIdentity.sellerAccountId)
+    && !fallbackAccounts.has(orderIdentity.sellerAccountId);
+  const record = {
+    ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
+    cloudSyncedAt: "",
+    cloudSyncError: "",
+    cloudDeletedAt: accountWasDisambiguated ? "" : previous?.cloudDeletedAt || ""
+  };
+  record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
+  if (previousEntry?.key && previousEntry.key !== record.recordId) delete records[previousEntry.key];
+  records[record.recordId] = record;
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  const config = normalizedMonitorConfig(settings);
+  if (config.enabled && !record.cloudDeletedAt) {
+    const attemptedAt = new Date().toISOString();
+    await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).then(async () => {
+      records[record.recordId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
+      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+    }).catch(async (error) => {
+      records[record.recordId] = error.permanentlyDeleted
+        ? { ...record, cloudSyncedAt: attemptedAt, cloudDeletedAt: attemptedAt, cloudSyncError: "", cloudSyncAttemptedAt: attemptedAt }
+        : { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
+      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+    });
+  }
+  return records[record.recordId];
+}
+
+async function syncPendingTrackingRecords({ limit = 50 } = {}) {
+  const config = await monitorConfig();
+  if (!config.enabled) return { ok: true, skipped: true, uploaded: 0, remaining: 0 };
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  const pending = Object.values(records).filter((record) =>
+    record?.orderId && record?.trackingNumber && !record.cloudDeletedAt && (!record.cloudSyncedAt || record.cloudSyncError)
+  );
+  let uploaded = 0;
+  let failed = 0;
+  let suppressed = 0;
+  for (const record of pending.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)))) {
+    const key = trackingRecords.recordKey(record);
+    if (!key) continue;
+    const attemptedAt = new Date().toISOString();
+    try {
+      await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) });
+      records[key] = {
+        ...records[key],
+        cloudSyncedAt: attemptedAt,
+        cloudSyncAttemptedAt: attemptedAt,
+        cloudSyncError: ""
+      };
+      uploaded += 1;
+    } catch (error) {
+      records[key] = {
+        ...records[key],
+        cloudSyncAttemptedAt: attemptedAt,
+        cloudSyncError: error.message
+      };
+      if (error.permanentlyDeleted) {
+        records[key] = {
+          ...records[key],
+          cloudSyncedAt: attemptedAt,
+          cloudDeletedAt: attemptedAt,
+          cloudSyncAttemptedAt: attemptedAt,
+          cloudSyncError: ""
+        };
+        suppressed += 1;
+        continue;
+      }
+      failed += 1;
+      if (/revoked|not configured/i.test(error.message)) break;
+    }
+  }
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return { ok: failed === 0, uploaded, failed, suppressed, remaining: Math.max(0, pending.length - uploaded - suppressed) };
+}
+
+async function mergeRemoteTrackingRecords(remoteOrders = []) {
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  for (const remote of remoteOrders) {
+    if (!remote?.orderId) continue;
+    const previousEntry = trackingRecords.findRecordEntry(records, remote);
+    const local = previousEntry?.value || {};
+    const key = trackingRecords.recordKey(remote);
+    if (!key) continue;
+    if (previousEntry?.key && previousEntry.key !== key) delete records[previousEntry.key];
+    records[key] = {
+      ...local,
+      ...remote,
+      sourceUrl: remote.amazonUrl || local.sourceUrl || "",
+      sellerAccountId: remote.accountId || local.sellerAccountId || "",
+      sellerAccountName: remote.accountName || local.sellerAccountName || ""
+    };
+  }
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return records;
+}
+
+async function trackedRecords({ refresh = true, orderIds = [] } = {}) {
+  if (refresh) {
+    const config = await monitorConfig();
+    if (config.enabled) {
+      const validOrderIds = [...new Set((orderIds || []).map(String).filter((value) => /^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(value)))].slice(0, 100);
+      const query = validOrderIds.length
+        ? `?limit=${validOrderIds.length}&order_ids=${encodeURIComponent(validOrderIds.join(","))}`
+        : "?limit=500";
+      const payload = await monitorRequest(`/api/orders${query}`).catch(() => null);
+      if (payload?.orders) return mergeRemoteTrackingRecords(payload.orders);
+    }
+  }
+  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return records;
+}
+
+async function refreshMonitorAlerts() {
+  const config = await monitorConfig();
+  if (!config.enabled || !config.pickupNotifications) return { ok: true, skipped: true };
+  const payload = await monitorRequest("/api/orders?alerts=1&limit=100");
+  await mergeRemoteTrackingRecords(payload.orders || []);
+  for (const order of payload.orders || []) {
+    const notificationId = `return-pickup:${encodeURIComponent(order.recordId || order.orderId)}`;
+    await chrome.notifications.create(notificationId, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: "Returned package ready for pickup",
+      message: `Order ${order.orderId} · ${order.trackingNumber} is waiting to be collected.`,
+      contextMessage: order.accountName || order.carrierLabel || "Carrier Return Monitor",
+      priority: 2,
+      requireInteraction: true
+    });
+    await monitorRequest(`/api/orders/${encodeURIComponent(order.recordId || order.orderId)}/ack-pickup`, { method: "POST", body: "{}" });
+  }
+  return { ok: true, count: (payload.orders || []).length };
+}
+
+async function pairMonitorDevice({ serverUrl, code, deviceName }) {
+  const config = normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: serverUrl, monitorAccessToken: "temporary" });
+  if (!config.serverUrl || !/^\d{6}$/.test(String(code || "").trim())) throw new Error("Enter the server URL and six-digit pairing code.");
+  const response = await fetch(`${config.serverUrl}/api/pairing/claim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: String(code).trim(), deviceName: String(deviceName || navigator.userAgent || "Chrome/Brave browser").slice(0, 100) })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.token) throw new Error(payload.error || "Browser pairing failed.");
+  const stored = await chrome.storage.local.get("claimSettings");
+  const claimSettings = {
+    ...DEFAULT_CLAIM_SETTINGS,
+    ...(stored.claimSettings || {}),
+    cloudSyncEnabled: true,
+    monitorServerUrl: config.serverUrl,
+    monitorAccessToken: payload.token,
+    pickupNotifications: true
+  };
+  await chrome.storage.local.set({ claimSettings });
+  await scheduleMonitorAlertPolling();
+  const sync = await syncPendingTrackingRecords();
+  return { ok: true, deviceId: payload.deviceId, deviceName: payload.deviceName, uploadedOrders: sync.uploaded, pendingOrders: sync.remaining };
+}
+
+async function redeemCloudClaimLaunch(token) {
+  const cleanToken = String(token || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 160);
+  if (!cleanToken) throw new Error("The cloud claim link is missing or invalid.");
+  const payload = await monitorRequest("/api/claim-launch/redeem", {
+    method: "POST",
+    body: JSON.stringify({ token: cleanToken })
+  });
+  const claim = payload.claim;
+  if (!claim || !["laposte", "chronopost"].includes(claim.carrier)) throw new Error("The cloud claim package is invalid.");
+  await updatePendingClaim(claim.carrier, claim);
+  return { ok: true, claim };
+}
 
 async function startStatusCheck(message, sender) {
   const { carrier, order, auditId, auditWorkerTabId } = message;
@@ -98,6 +458,7 @@ async function deliverStatusResult(message, sender) {
   if (!request) return { ok: false, error: "Status request expired." };
 
   const result = { ...message.result, carrier: request.carrier, checkedAt: new Date().toISOString() };
+  await saveTrackingRecord(request.order, result);
   await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
     type: "ORDER_AUDIT_RESULT",
     auditId: request.auditId,
@@ -253,6 +614,7 @@ async function receiveOrderAuditDetails(message, sender) {
     return { ok: true, completed: true };
   }
   const carrier = carrierRules.detectCarrier(order);
+  await saveTrackingRecord(order, {}, carrierRules.recommendClaim(order, {}));
   if (!carrier.supported) {
     await finishOrderAuditLoad(request, {
       order,
@@ -326,6 +688,40 @@ async function clearPendingClaim(carrier) {
   return { ok: true };
 }
 
+function sellerNoteOrderUrl(order = {}, outcome = {}) {
+  const orderId = String(order.orderId || outcome.orderId || "").trim();
+  if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(orderId) || !order.sourceUrl) return "";
+  try {
+    const url = new URL(String(order.sourceUrl));
+    if (url.origin !== "https://sellercentral.amazon.fr" || url.pathname !== `/orders-v3/order/${orderId}`) return "";
+    url.hash = `carrier-claim-seller-note=${encodeURIComponent(outcome.id || orderId)}`;
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function saveSellerNoteInBackground(claim, outcome) {
+  const url = sellerNoteOrderUrl(claim.order, outcome);
+  if (!url) return null;
+  const tab = await chrome.tabs.create({ active: false, url });
+  try {
+    for (let attempt = 0; attempt < SELLER_NOTE_RETRY_ATTEMPTS; attempt += 1) {
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: "CLAIM_SUBMISSION_SUCCESS",
+        outcome
+      }).catch(() => null);
+      if (response?.noteSaved) return response;
+      if (attempt + 1 < SELLER_NOTE_RETRY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, SELLER_NOTE_RETRY_DELAY_MS));
+      }
+    }
+    return null;
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
 async function handleClaimWorkflowState(message, sender) {
   const key = pendingClaimKey(message.carrier);
   if (!key) return { ok: false, error: "Unsupported carrier claim." };
@@ -352,7 +748,7 @@ async function handleClaimWorkflowState(message, sender) {
   return { ok: true, foregrounded: needsForeground };
 }
 
-async function handleClaimSubmissionSuccess(message) {
+async function handleClaimSubmissionSuccess(message, sender) {
   const key = pendingClaimKey(message.carrier);
   if (!key) return { ok: false, error: "Unsupported carrier claim." };
   const storedClaim = await chrome.storage.session.get(key);
@@ -360,16 +756,24 @@ async function handleClaimSubmissionSuccess(message) {
   if (!claim || !message.claimId || claim.id !== message.claimId) {
     return { ok: false, error: "Pending claim expired or does not match." };
   }
-  if (!claim.submissionStartedAt) {
+  const reference = String(message.reference || "").replace(/[^A-Z0-9./_-]/gi, "").slice(0, 40);
+  const senderUrl = String(sender?.url || sender?.tab?.url || "");
+  const recoveredFromOfficialConfirmation = message.recoveredFromCarrierConfirmation === true &&
+    message.carrier === "laposte" &&
+    Boolean(reference) &&
+    /^https:\/\/(?:contact\.aide|aide)\.laposte\.fr\//i.test(senderUrl);
+  if (!claim.submissionStartedAt && !recoveredFromOfficialConfirmation) {
     return { ok: false, error: "The carrier submission was not explicitly confirmed." };
   }
 
-  const reference = String(message.reference || "").replace(/[^A-Z0-9./_-]/gi, "").slice(0, 40);
   const outcome = {
     id: claim.id,
     carrier: claim.carrier,
     orderId: claim.order?.orderId || "",
     trackingNumber: claim.order?.trackingNumber || "",
+    sellerAccountId: claim.order?.sellerAccountId || "sellercentral.amazon.fr",
+    sellerAccountName: claim.order?.sellerAccountName || "Seller Central account",
+    marketplaceId: claim.order?.marketplaceId || "A13V1IB3VIYZZH",
     reason: claim.reason || "other",
     reference,
     confirmationText: String(message.confirmationText || "").replace(/\s+/g, " ").trim().slice(0, 500),
@@ -377,11 +781,15 @@ async function handleClaimSubmissionSuccess(message) {
     noteSaved: false
   };
   outcome.sellerNote = outcomeRules.buildSellerNote(outcome);
+  outcome.recordId = trackingRecords.recordKey(outcome);
 
   const storedOutcomes = await chrome.storage.local.get(CLAIM_OUTCOMES_KEY);
-  const outcomes = { ...(storedOutcomes[CLAIM_OUTCOMES_KEY] || {}) };
-  if (outcome.orderId) outcomes[outcome.orderId] = outcome;
+  const outcomes = trackingRecords.rekeyRecords(storedOutcomes[CLAIM_OUTCOMES_KEY] || {});
+  const previousOutcome = trackingRecords.findRecordEntry(outcomes, outcome);
+  if (previousOutcome?.key && previousOutcome.key !== outcome.recordId) delete outcomes[previousOutcome.key];
+  if (outcome.recordId) outcomes[outcome.recordId] = outcome;
   await chrome.storage.local.set({ [CLAIM_OUTCOMES_KEY]: outcomes });
+  await saveTrackingRecord(claim.order || {}, claim.trackingStatus || {}, claim.recommendation || null, outcome);
   await chrome.storage.session.remove(key);
 
   let amazonResponse = null;
@@ -391,10 +799,52 @@ async function handleClaimSubmissionSuccess(message) {
       outcome
     }).catch(() => null);
   }
+  if (!amazonResponse) {
+    amazonResponse = await saveSellerNoteInBackground(claim, outcome);
+  }
   return { ok: true, outcome, noteSaved: Boolean(amazonResponse?.noteSaved) };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "REGISTER_TRACKED_ORDER") {
+    saveTrackingRecord(message.order || {}, message.result || {}, message.recommendation || null, message.outcome || null)
+      .then((record) => sendResponse({ ok: true, record }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "GET_TRACKED_RECORDS") {
+    trackedRecords({ refresh: message.refresh !== false, orderIds: message.orderIds || [] })
+      .then((records) => sendResponse({ ok: true, records }))
+      .catch((error) => sendResponse({ ok: false, records: {}, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "PAIR_MONITOR_DEVICE") {
+    pairMonitorDevice(message)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "TEST_MONITOR_CONNECTION") {
+    testMonitorConnection(message.serverUrl, message.token)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "REDEEM_CLOUD_CLAIM") {
+    redeemCloudClaimLaunch(message.token)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "REFRESH_MONITOR_ALERTS") {
+    refreshMonitorAlerts().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (message?.type === "CHECK_CARRIER_STATUS") {
     startStatusCheck(message, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -469,7 +919,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "CLAIM_SUBMISSION_SUCCESS") {
-    handleClaimSubmissionSuccess(message)
+    handleClaimSubmissionSuccess(message, sender)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -516,7 +966,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 
+chrome.notifications?.onClicked.addListener((notificationId) => {
+  if (!notificationId.startsWith("return-pickup:")) return;
+  const recordId = decodeURIComponent(notificationId.slice("return-pickup:".length));
+  chrome.storage.local.get(TRACKED_ORDERS_KEY).then((stored) => {
+    const record = Object.values(stored[TRACKED_ORDERS_KEY] || {}).find((item) => item.recordId === recordId);
+    const url = record?.sourceUrl || (record?.orderId ? `https://sellercentral.amazon.fr/orders-v3/order/${record.orderId}` : "");
+    if (url) chrome.tabs.create({ url, active: true });
+  });
+});
+
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === MONITOR_ALERT_ALARM) {
+    syncPendingTrackingRecords().catch(() => {});
+    refreshMonitorAlerts().catch(() => {});
+    return;
+  }
   if (alarm.name.startsWith("orderAuditLoadTimeout:")) {
     const auditId = alarm.name.slice("orderAuditLoadTimeout:".length);
     const requestKey = `orderAuditRequest:${auditId}`;

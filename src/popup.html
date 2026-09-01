@@ -5,15 +5,21 @@
     <style>
       body { width: 280px; margin: 0; padding: 20px; font: 14px/1.45 system-ui, sans-serif; color: #16243a; }
       h1 { margin: 0 0 8px; font-size: 18px; } p { color: #5d6978; }
-      button { width: 100%; border: 0; border-radius: 8px; padding: 10px; background: #0062ad; color: white; font: inherit; font-weight: 750; cursor: pointer; }
+      .actions { display: grid; gap: 8px; } button { width: 100%; border: 0; border-radius: 8px; padding: 10px; background: #0062ad; color: white; font: inherit; font-weight: 750; cursor: pointer; } button.secondary { background: #eef3f7; color: #24364b; }
+      #connection { display: block; margin: 10px 0 12px; padding: 7px 9px; border-radius: 7px; background: #f3f5f7; color: #59697a; font-size: 12px; }
       small { display: block; margin-top: 12px; color: #768292; }
     </style>
   </head>
   <body>
     <h1>Carrier Claim Assistant</h1>
     <p>Open an Amazon Seller order. The blue button checks Colissimo, La Poste, or Chronopost and recommends a claim when needed.</p>
-    <button id="settings">Sender settings</button>
-    <small>Buyer/order details are stored for this browser session only.</small>
+    <span id="connection">Checking return monitor…</span>
+    <div class="actions">
+      <button id="dashboard">Open return dashboard</button>
+      <button id="refresh" class="secondary">Check pickup alerts</button>
+      <button id="settings" class="secondary">Settings / pair browser</button>
+    </div>
+    <small>Cloud sync is optional. Pair each Chrome/Brave installation with a temporary six-digit code.</small>
     <script src="popup.js"></script>
   </body>
 </html>

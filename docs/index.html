@@ -19,22 +19,21 @@
   <body>
     <main>
       <h1>Carrier Claim Assistant Privacy Policy</h1>
-      <p class="date">Effective 24 August 2026</p>
+      <p class="date">Effective 1 September 2026</p>
       <p>Carrier Claim Assistant helps Amazon Seller Central operators check official carrier status and prepare claims for Colissimo, La Poste, and Chronopost shipments.</p>
       <h2>Data handled</h2>
       <p>The extension may read order and shipment details, the recipient name and delivery address, and existing Seller Notes from Amazon Seller Central. A user may save a sender profile and may create editable claim drafts. Confirmed carrier references can be retained with the order.</p>
       <h2>How data is used</h2>
-      <p>Data is used only to provide the extension's visible delivery-check, claim-preview, carrier-prefill, Seller Notes, and duplicate-prevention features. The extension does not send order, recipient, sender, or claim data to the extension developer.</p>
-      <p>A tracking number is sent only to the official La Poste or Chronopost tracking page. When the user starts and confirms a claim, required claim data is submitted directly to the selected carrier's official website.</p>
+      <p>Data is used only to provide the extension's visible delivery-check, claim-preview, carrier-prefill, Seller Notes, duplicate-prevention, return-monitoring, and pickup-alert features. The extension does not send order, recipient, sender, or claim data to the extension developer.</p>
+      <p>Private cloud sync is off by default. When explicitly enabled, order, recipient, tracking, merchant-account, status, claim, and resolution details are sent to the operator's configured monitor server. That server sends tracking numbers to La Poste's official Suivi v2 API for daily Colissimo, La Poste, and Chronopost checks. Claim form data is submitted directly to the selected carrier's official website only after user confirmation.</p>
       <h2>Storage and retention</h2>
-      <p>Sender settings, cached audit results, and successful claim outcomes are stored in browser extension storage on the user's device. Pending claim details use browser session storage. Delivered results may remain until extension data is cleared or the extension is uninstalled.</p>
+      <p>Sender settings, cached audit results, successful claim outcomes, and the optional per-device monitor token are stored in browser extension storage. Pending claim details use browser session storage. Synchronized monitor records remain in the operator's private database until an authenticated administrator deletes them or removes the service. Resolved history is retained but excluded from future tracking checks. The dashboard can export order and tracking history as JSON and permanently delete an explicitly confirmed resolved record; active cases cannot be deleted through this control. After deletion, the monitor retains only the seller-account, marketplace, and Amazon-order identifiers, an internal record identifier, and deletion time to prevent an older paired browser from restoring the deleted record. This marker contains no tracking number, recipient, address, item, status, claim, or carrier-event data and remains until the private monitor database or service is removed. Pairing codes expire after ten minutes.</p>
       <h2>Sharing and sale</h2>
       <p>The extension has no analytics, advertising, or third-party tracking libraries. Data is not sold, rented, or shared for advertising, profiling, or unrelated purposes.</p>
       <h2>Security and user control</h2>
-      <p>The extension uses Manifest V3 permissions limited to supported Amazon and carrier pages. It does not collect account passwords or payment details. Final carrier submission requires explicit confirmation. Users can edit settings, recheck status, clear extension data, or uninstall at any time.</p>
+      <p>The extension uses Manifest V3 storage, alarms, and notifications plus supported Amazon/carrier pages. Access to a monitor origin is optional and requested for the exact HTTPS server configured by the operator. Carrier API and admin secrets remain server-side. The private dashboard uses the operator's existing Cheaply SSO identity in a secure HttpOnly session, while each paired browser receives a separate revocable upload token. The extension does not collect account passwords or payment details. Final carrier submission requires explicit confirmation.</p>
       <h2>Changes and contact</h2>
       <p>Material changes will be published on this page. The publisher's support email is available on the Chrome Web Store listing.</p>
     </main>
   </body>
 </html>
-
