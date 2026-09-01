@@ -524,6 +524,32 @@ test("keeps a complete claim package when another browser uploads blank sender f
   assert.equal(payload.order.quantity, "2");
 });
 
+test("validates uploaded workflow states and preserves the contents-missing claim reason", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "404-6709725-6157921",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-enums",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "invented-state",
+    claimReason: "invented-reason",
+    claimStatus: "invented-status"
+  });
+  let row = database.prepare("SELECT tracking_state, claim_reason, claim_status FROM orders").get();
+  assert.equal(row.tracking_state, "unknown");
+  assert.equal(row.claim_reason, "other");
+  assert.equal(row.claim_status, "none");
+
+  await upsertOrder(db, { ...identity, claimReason: "contents_missing", claimStatus: "requested" });
+  row = database.prepare("SELECT claim_reason, claim_status FROM orders").get();
+  assert.equal(row.claim_reason, "contents_missing");
+  assert.equal(row.claim_status, "requested");
+});
+
 test("stores only a matching Amazon Seller Central order URL", async (context) => {
   const { database, db } = await monitorDatabase();
   context.after(() => database.close());

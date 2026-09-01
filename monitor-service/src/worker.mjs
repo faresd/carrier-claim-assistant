@@ -2,6 +2,9 @@ import { dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./a
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
+const TRACKING_STATES = new Set(["unknown", "in_transit", "returning", "pickup_ready", "lost", "damaged", "delivered", "resolved"]);
+const CLAIM_REASONS = new Set(["lost", "returned", "delayed", "damaged", "delivered_missing", "contents_missing", "other"]);
+const CLAIM_STATUSES = new Set(["none", "requested", "sent"]);
 const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_URLS = {
@@ -156,6 +159,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   const orderId = clean(input.orderId, 40);
   const accountId = clean(input.sellerAccountId || input.accountId || "default", 180);
   const marketplaceId = clean(input.marketplaceId || "A13V1IB3VIYZZH", 180);
+  const trackingState = clean(input.trackingState || "unknown", 30);
+  const claimReason = clean(input.claimReason || "none", 50);
+  const claimStatus = clean(input.claimStatus || "none", 30);
   return {
     recordId: `${accountId}|${marketplaceId}|${orderId}`,
     accountId,
@@ -176,14 +182,14 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     recipientCity: clean(input.recipientCity, 120),
     recipientPostalCode: clean(input.recipientPostalCode, 30),
     recipientCountry: clean(input.recipientCountry, 100),
-    trackingState: clean(input.trackingState || "unknown", 30),
+    trackingState: TRACKING_STATES.has(trackingState) ? trackingState : "unknown",
     statusText: clean(input.statusText, 1000),
     statusSummary: clean(input.statusSummary, 5000),
     checkedAt: clean(input.checkedAt, 40),
     claimRecommended: input.claimRecommended ? 1 : 0,
-    claimReason: clean(input.claimReason || "none", 50),
+    claimReason: claimReason === "none" || CLAIM_REASONS.has(claimReason) ? claimReason : "other",
     claimTitle: clean(input.claimTitle, 250),
-    claimStatus: clean(input.claimStatus || "none", 30),
+    claimStatus: CLAIM_STATUSES.has(claimStatus) ? claimStatus : "none",
     claimReference: clean(input.claimReference, 80),
     claimSubmittedAt: clean(input.claimSubmittedAt, 40),
     claimPayload: claimPayloadJson(input),
@@ -493,7 +499,7 @@ async function mutateOrder(request, env, recordId, action, deviceId = "master") 
     await env.DB.prepare("UPDATE orders SET tracking_state = COALESCE(NULLIF(resolution_previous_state, ''), 'returning'), resolution_previous_state = '', resolved_at = '', resolution_note = '', updated_at = ? WHERE record_id = ?")
       .bind(now, recordId).run();
   } else if (action === "claim") {
-    const reason = ["lost", "returned", "delayed", "damaged", "delivered_missing", "other"].includes(body.reason) ? body.reason : "other";
+    const reason = CLAIM_REASONS.has(body.reason) ? body.reason : "other";
     await env.DB.prepare("UPDATE orders SET claim_status = 'requested', claim_reason = ?, claim_recommended = 1, updated_at = ? WHERE record_id = ?")
       .bind(reason, now, recordId).run();
   } else if (action === "ack-pickup") {
@@ -522,8 +528,7 @@ async function createClaimLaunch(request, env, recordId) {
   const carrier = row.carrier_id === "chronopost" || /chrono/i.test(row.carrier_label) ? "chronopost" : "laposte";
   const body = await request.json().catch(() => ({}));
   const payload = parsedClaimPayload(row);
-  const allowedReasons = ["lost", "returned", "delayed", "damaged", "delivered_missing", "other"];
-  const reason = allowedReasons.includes(body.reason) ? body.reason : allowedReasons.includes(row.claim_reason) ? row.claim_reason : "other";
+  const reason = CLAIM_REASONS.has(body.reason) ? body.reason : CLAIM_REASONS.has(row.claim_reason) ? row.claim_reason : "other";
   payload.carrier = carrier;
   payload.reason = reason;
   payload.details = clean(body.details || payload.details || row.claim_title || `Commande Amazon ${row.order_id} · ${row.status_text}`, 500);

@@ -60,6 +60,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboard, /id="account-filter"/);
   assert.match(dashboardScript, /data-launch-claim/);
   assert.match(dashboardScript, /Review or edit the claim message/);
+  assert.match(dashboardScript, /\["returning", "pickup_ready"\].*return "returned"/);
+  assert.match(dashboardScript, /contents_missing/);
   assert.match(dashboardScript, /data-resolve/);
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
