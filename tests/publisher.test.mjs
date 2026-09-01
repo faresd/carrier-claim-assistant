@@ -34,7 +34,10 @@ test("exchanges OAuth, polls upload status, and submits the verified package", a
   const replies = [
     response({ access_token: "access-token" }),
     response({ uploadState: "UPLOAD_IN_PROGRESS" }),
-    response({ uploadState: "UPLOAD_SUCCESS", crxVersion: "2.8.0" }),
+    response({
+      lastAsyncUploadState: "UPLOAD_SUCCESS",
+      submittedItemRevisionStatus: { distributionChannels: [{ crxVersion: "2.9.0" }] }
+    }),
     response({ state: "IN_REVIEW" })
   ];
   const logs = [];
@@ -64,10 +67,10 @@ test("exchanges OAuth, polls upload status, and submits the verified package", a
     skipReview: false,
     blockOnWarnings: true
   });
-  assert.equal(result.upload.crxVersion, "2.8.0");
+  assert.equal(result.upload.lastAsyncUploadState, "UPLOAD_SUCCESS");
   assert.equal(result.published.state, "IN_REVIEW");
   assert.deepEqual(logs, [
-    "Uploaded extension version 2.8.0.",
+    "Uploaded extension version 2.9.0.",
     "Chrome Web Store submission state: IN_REVIEW."
   ]);
   assert.equal(logs.join(" ").includes(environment.CWS_REFRESH_TOKEN), false);
@@ -108,4 +111,3 @@ test("surfaces official upload failure without attempting publication", async ()
   assert.equal(requests.length, 2);
   assert.equal(requests.some(({ url }) => url.endsWith(":publish")), false);
 });
-

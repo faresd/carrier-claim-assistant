@@ -12,6 +12,16 @@ const REQUIRED_ENVIRONMENT = [
 ];
 const API_BASE = "https://chromewebstore.googleapis.com";
 
+export function uploadState(payload = {}) {
+  return payload.uploadState || payload.lastAsyncUploadState || "";
+}
+
+function uploadedVersion(payload = {}) {
+  if (payload.crxVersion) return payload.crxVersion;
+  const channels = payload.submittedItemRevisionStatus?.distributionChannels || [];
+  return channels.find((channel) => channel?.crxVersion)?.crxVersion || "unknown";
+}
+
 export async function jsonRequest(fetchImplementation, url, options) {
   const response = await fetchImplementation(url, options);
   const raw = await response.text();
@@ -71,17 +81,18 @@ export async function publishChromeWebStore({
     body: readFileSync(path.resolve(archivePath))
   });
 
-  for (let attempt = 0; upload.uploadState === "UPLOAD_IN_PROGRESS" && attempt < 30; attempt += 1) {
+  for (let attempt = 0; uploadState(upload) === "UPLOAD_IN_PROGRESS" && attempt < 30; attempt += 1) {
     await wait(5000);
     upload = await jsonRequest(fetchImplementation, `${API_BASE}/v2/${itemName}:fetchStatus`, {
       method: "GET",
       headers: authorization
     });
   }
-  if (upload.uploadState !== "UPLOAD_SUCCESS") {
-    throw new Error(`Package upload did not succeed (state: ${upload.uploadState || "unknown"}).`);
+  const finalUploadState = uploadState(upload);
+  if (finalUploadState !== "UPLOAD_SUCCESS") {
+    throw new Error(`Package upload did not succeed (state: ${finalUploadState || "unknown"}).`);
   }
-  log(`Uploaded extension version ${upload.crxVersion || "unknown"}.`);
+  log(`Uploaded extension version ${uploadedVersion(upload)}.`);
 
   const published = await jsonRequest(fetchImplementation, `${API_BASE}/v2/${itemName}:publish`, {
     method: "POST",
@@ -105,4 +116,3 @@ const mainModule = process.argv[1]
 if (mainModule) {
   await publishChromeWebStore({ archivePath: process.argv[2] });
 }
-
