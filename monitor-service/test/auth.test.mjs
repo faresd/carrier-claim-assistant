@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   beginDashboardLogin,
   dashboardAuthConfig,
@@ -14,6 +15,11 @@ import {
 const SESSION_SECRET = "session-secret-that-is-longer-than-thirty-two-characters";
 const CLIENT_SECRET = "client-secret-that-is-longer-than-thirty-two-characters";
 const encoder = new TextEncoder();
+
+const registration = JSON.parse(await readFile(
+  new URL("../sso/tracking-web-client.json", import.meta.url),
+  "utf8"
+));
 
 function base64Url(value) {
   const bytes = typeof value === "string" ? encoder.encode(value) : new Uint8Array(value);
@@ -48,6 +54,17 @@ test("keeps dashboard return paths on tracking.cheaply.fr", () => {
   assert.equal(safeReturnTo("https://evil.example/steal"), "/");
   assert.equal(safeReturnTo("//evil.example/steal"), "/");
   assert.equal(safeReturnTo("/\\evil"), "/");
+});
+
+test("keeps the dashboard implementation aligned with the central SSO registration contract", () => {
+  assert.equal(registration.client_id, dashboardAuthConfig.clientId);
+  assert.equal(registration.application_origin, dashboardAuthConfig.appOrigin);
+  assert.deepEqual(registration.redirect_uris, [dashboardAuthConfig.callbackUri]);
+  assert.deepEqual(registration.grant_types, ["authorization_code"]);
+  assert.deepEqual(registration.response_types, ["code"]);
+  assert.equal(registration.pkce_method, "S256");
+  assert.equal(registration.id_token_signing_alg, "RS256");
+  assert.equal(registration.client_secret_binding, "TRACKING_CLIENT_SECRET");
 });
 
 test("signs short-lived auth payloads and rejects tampering or expiry", async () => {
