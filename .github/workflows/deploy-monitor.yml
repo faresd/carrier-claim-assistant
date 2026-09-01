@@ -77,4 +77,5 @@ jobs:
       - name: Verify the live dashboard and authentication boundary
         env:
           MONITOR_BASE_URL: https://tracking.cheaply.fr
+          MONITOR_ALLOW_PENDING: ${{ inputs.allow_pending_laposte }}
         run: node monitor-service/scripts/smoke-production.mjs
