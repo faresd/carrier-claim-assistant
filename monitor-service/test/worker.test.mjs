@@ -2,7 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor, upsertOrder } from "../src/worker.mjs";
+import monitorWorker, {
+  allowedApiOrigin,
+  classifyTrackingState,
+  enqueueDailyMonitor,
+  normalizeCarrierPayload,
+  processTrackingMessage,
+  shouldRunMorningMonitor,
+  upsertOrder
+} from "../src/worker.mjs";
+import { csrfTokenForSession, signAuthPayload } from "../src/auth.mjs";
 
 class D1SqliteAdapter {
   constructor(database) {
@@ -23,6 +32,10 @@ class D1SqliteAdapter {
     };
     return bound;
   }
+
+  async batch(statements) {
+    return Promise.all(statements.map((statement) => statement.run()));
+  }
 }
 
 async function monitorDatabase() {
@@ -38,9 +51,27 @@ test("classifies a returned parcel waiting for sender pickup as urgent", () => {
   ), "pickup_ready");
 });
 
+test("does not treat a future return warning as sender pickup", () => {
+  assert.equal(classifyTrackingState(
+    "Votre colis est disponible au bureau de poste pour le destinataire.",
+    "À défaut de retrait avant le 8 septembre, il sera retourné à l'expéditeur."
+  ), "unknown");
+});
+
 test("keeps return-in-transit and lost parcels in separate queues", () => {
   assert.equal(classifyTrackingState("Votre colis est en retour à l'expéditeur."), "returning");
   assert.equal(classifyTrackingState("Votre colis ne peut plus être localisé."), "lost");
+});
+
+test("lets the newest delivered or lost event override older return history", () => {
+  assert.equal(classifyTrackingState(
+    "Votre colis a été livré.",
+    "Votre colis est en retour à l'expéditeur."
+  ), "delivered");
+  assert.equal(classifyTrackingState(
+    "Votre colis ne peut plus être localisé.",
+    "Votre colis est en retour à l'expéditeur."
+  ), "lost");
 });
 
 test("normalizes a Suivi v2 event history", () => {
@@ -53,10 +84,299 @@ test("normalizes a Suivi v2 event history", () => {
   assert.match(result.statusSummary, /retour/i);
 });
 
+test("normalizes a delivered latest event even when older history records a return", () => {
+  const result = normalizeCarrierPayload({ shipment: { event: [
+    { date: "2026-08-30T08:00:00Z", label: "Votre colis est en retour à l'expéditeur", code: "RETOUR" },
+    { date: "2026-09-01T06:30:00Z", label: "Votre colis a été livré.", code: "LIVRE" }
+  ] } });
+  assert.equal(result.trackingState, "delivered");
+  assert.match(result.statusText, /livr/i);
+});
+
 test("runs only during the seven o'clock Paris hour", () => {
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T05:15:00Z")), true);
   assert.equal(shouldRunMorningMonitor(new Date("2026-09-01T06:15:00Z")), false);
   assert.equal(shouldRunMorningMonitor(new Date("2026-12-01T06:15:00Z")), true);
+});
+
+test("allows API CORS only for the production dashboard and real extension origins", async () => {
+  const dashboard = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: "https://tracking.cheaply.fr" }
+  });
+  const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const extension = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: extensionOrigin }
+  });
+  const untrusted = new Request("https://tracking.cheaply.fr/api/orders", {
+    method: "OPTIONS",
+    headers: { origin: "https://example.test" }
+  });
+
+  assert.equal(allowedApiOrigin(dashboard), "https://tracking.cheaply.fr");
+  assert.equal(allowedApiOrigin(extension), extensionOrigin);
+  assert.equal(allowedApiOrigin(untrusted), "");
+
+  const dashboardResponse = await monitorWorker.fetch(dashboard, {});
+  assert.equal(dashboardResponse.status, 204);
+  assert.equal(dashboardResponse.headers.get("access-control-allow-origin"), "https://tracking.cheaply.fr");
+
+  const extensionResponse = await monitorWorker.fetch(extension, {});
+  assert.equal(extensionResponse.status, 204);
+  assert.equal(extensionResponse.headers.get("access-control-allow-origin"), extensionOrigin);
+
+  const untrustedResponse = await monitorWorker.fetch(untrusted, {});
+  assert.equal(untrustedResponse.status, 403);
+  assert.equal(untrustedResponse.headers.get("access-control-allow-origin"), null);
+});
+
+test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolves, and revokes access", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const sessionSecret = "test-session-secret-with-at-least-thirty-two-characters";
+  const env = { DB: db, SESSION_SECRET: sessionSecret };
+  const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const adminSession = {
+    sub: "admin:owner@example.com", email: "owner@example.com", role: "admin", name: "Owner",
+    jti: "worker-integration-session", exp: Math.floor(Date.now() / 1000) + 300
+  };
+  const adminCookie = `__Host-carrier_monitor_session=${await signAuthPayload(adminSession, sessionSecret)}`;
+  const adminCsrf = await csrfTokenForSession(adminSession, sessionSecret);
+  const jsonRequest = (path, {
+    token = "", body = null, origin = extensionOrigin, method = body == null ? "GET" : "POST", cookie = "", csrf = ""
+  } = {}) => new Request(`https://tracking.cheaply.fr${path}`, {
+    method,
+    headers: {
+      origin,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(cookie ? { cookie } : {}),
+      ...(csrf ? { "x-csrf-token": csrf } : {}),
+      ...(body == null ? {} : { "content-type": "application/json" })
+    },
+    ...(body == null ? {} : { body: JSON.stringify(body) })
+  });
+  const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+  await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .bind("654321", "Packing desk", new Date().toISOString(), expiresAt).run();
+
+  const pairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
+    body: { code: "654321", deviceName: "Work Brave" }
+  }), env);
+  assert.equal(pairingResponse.status, 200);
+  const pairing = await pairingResponse.json();
+  assert.match(pairing.token, /^[A-Za-z0-9]{64}$/);
+  assert.equal(pairing.deviceName, "Work Brave");
+
+  const common = {
+    marketplaceId: "A13V1IB3VIYZZH",
+    carrierId: "laposte",
+    carrierLabel: "Colissimo",
+    trackingState: "returning",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  };
+  const firstOrder = {
+    ...common,
+    orderId: "402-2797047-3010738",
+    trackingNumber: "8U02230078613",
+    sellerAccountId: "merchant-fr-one",
+    sellerAccountName: "Cheaply France"
+  };
+  const secondOrder = {
+    ...common,
+    orderId: "408-9133278-8011502",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-fr-two",
+    sellerAccountName: "Cheaply Outlet"
+  };
+  for (const order of [firstOrder, secondOrder]) {
+    const response = await monitorWorker.fetch(jsonRequest("/api/orders", { token: pairing.token, body: order }), env);
+    assert.equal(response.status, 200);
+  }
+
+  const listResponse = await monitorWorker.fetch(jsonRequest("/api/orders?limit=20", { token: pairing.token }), env);
+  assert.equal(listResponse.status, 200);
+  const listed = await listResponse.json();
+  assert.equal(listed.orders.length, 2);
+  assert.deepEqual(new Set(listed.orders.map((order) => order.accountId)), new Set(["merchant-fr-one", "merchant-fr-two"]));
+
+  const pickup = await upsertOrder(db, {
+    ...firstOrder,
+    trackingState: "pickup_ready",
+    statusText: "Votre envoi retourné est disponible au bureau de poste.",
+    checkedAt: "2026-09-02T07:00:00.000Z"
+  });
+  const alertsResponse = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
+  assert.equal(alertsResponse.status, 200);
+  const alerts = await alertsResponse.json();
+  assert.equal(alerts.orders.length, 1);
+  assert.equal(alerts.orders[0].trackingState, "pickup_ready");
+
+  const acknowledgement = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/ack-pickup`, {
+    token: pairing.token,
+    body: {}
+  }), env);
+  assert.equal(acknowledgement.status, 200);
+  const acknowledgedAlerts = await monitorWorker.fetch(jsonRequest("/api/orders?alerts=1&limit=20", { token: pairing.token }), env);
+  assert.deepEqual((await acknowledgedAlerts.json()).orders, []);
+
+  const resolvedResponse = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/resolve`, {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: { note: "Returned parcel physically received" }
+  }), env);
+  assert.equal(resolvedResponse.status, 200);
+  assert.equal((await resolvedResponse.json()).order.trackingState, "resolved");
+  const resolvedList = await monitorWorker.fetch(jsonRequest("/api/orders?view=resolved&limit=20", {
+    cookie: adminCookie,
+    origin: "https://tracking.cheaply.fr"
+  }), env);
+  assert.equal((await resolvedList.json()).orders.length, 1);
+
+  const revokeResponse = await monitorWorker.fetch(jsonRequest(`/api/devices/${encodeURIComponent(pairing.deviceId)}/revoke`, {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: {}
+  }), env);
+  assert.equal(revokeResponse.status, 200);
+  const revokedResponse = await monitorWorker.fetch(jsonRequest("/api/orders?limit=20", { token: pairing.token }), env);
+  assert.equal(revokedResponse.status, 401);
+});
+
+test("runs one idempotent morning queue through Suivi v2 and stores pickup and delivered history", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: {
+      async sendBatch(messages) {
+        queued.push(...messages);
+      }
+    }
+  };
+  await upsertOrder(db, {
+    orderId: "402-2797047-3010738",
+    trackingNumber: "8U02230078613",
+    sellerAccountId: "merchant-one",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "returning"
+  });
+  await upsertOrder(db, {
+    orderId: "408-9133278-8011502",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-two",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "in_transit"
+  });
+
+  const runDate = new Date("2026-09-01T05:05:00.000Z");
+  const run = await enqueueDailyMonitor(env, runDate);
+  assert.equal(run.runDate, "2026-09-01");
+  assert.equal(run.queuedCount, 2);
+  assert.equal(queued.length, 2);
+
+  const fetchImpl = async (url, options) => {
+    assert.match(url, /^https:\/\/api\.laposte\.fr\/suivi\/v2\/idships\//);
+    assert.equal(options.headers["X-Okapi-Key"], "okapi-test-key");
+    const trackingNumber = decodeURIComponent(new URL(url).pathname.split("/").pop());
+    const event = trackingNumber === "8U02230078613"
+      ? { date: "2026-09-01T05:15:00.000Z", label: "Votre envoi retourné est disponible au bureau de poste.", code: "DISPO_RETOUR" }
+      : { date: "2026-09-01T05:16:00.000Z", label: "Votre colis a été livré.", code: "LIVRE" };
+    return Response.json({ returnCode: 200, shipment: { event: [event] } });
+  };
+  for (const queuedMessage of queued) {
+    let acknowledged = false;
+    let retried = false;
+    await processTrackingMessage({
+      body: queuedMessage.body,
+      ack() { acknowledged = true; },
+      retry() { retried = true; }
+    }, env, { fetchImpl });
+    assert.equal(acknowledged, true);
+    assert.equal(retried, false);
+  }
+
+  const states = database.prepare("SELECT tracking_number, tracking_state FROM orders ORDER BY tracking_number").all()
+    .map((row) => ({ ...row }));
+  assert.deepEqual(states, [
+    { tracking_number: "8U02230078613", tracking_state: "pickup_ready" },
+    { tracking_number: "CC105961572FR", tracking_state: "delivered" }
+  ]);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tracking_events").get().count, 2);
+  const completedRun = database.prepare("SELECT processed_count, checked_count, error_count, completed_at FROM monitor_runs").get();
+  assert.equal(completedRun.processed_count, 2);
+  assert.equal(completedRun.checked_count, 2);
+  assert.equal(completedRun.error_count, 0);
+  assert.notEqual(completedRun.completed_at, "");
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM monitor_jobs WHERE status = 'completed'").get().count, 2);
+
+  const repeated = await enqueueDailyMonitor(env, new Date("2026-09-01T05:45:00.000Z"));
+  assert.deepEqual(repeated, { skipped: true, reason: "already-run", runDate: "2026-09-01" });
+  assert.equal(queued.length, 2);
+});
+
+test("keeps a known pickup state through ambiguous tracking and preserves carrier evidence on API failure", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: { async sendBatch(messages) { queued.push(...messages); } }
+  };
+  await upsertOrder(db, {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-resilient",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "pickup_ready",
+    statusText: "Votre envoi retourné est disponible au bureau de poste.",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  });
+
+  await enqueueDailyMonitor(env, new Date("2026-09-02T05:05:00.000Z"));
+  const morningMessage = queued.shift();
+  let morningAcknowledged = false;
+  await processTrackingMessage({
+    body: morningMessage.body,
+    ack() { morningAcknowledged = true; },
+    retry() { throw new Error("Ambiguous successful responses must not retry."); }
+  }, env, {
+    fetchImpl: async () => Response.json({
+      returnCode: 200,
+      shipment: { event: [{ date: "2026-09-02T05:10:00.000Z", label: "Information prochainement disponible.", code: "INFO" }] }
+    })
+  });
+  assert.equal(morningAcknowledged, true);
+  let stored = database.prepare("SELECT tracking_state, status_text FROM orders").get();
+  assert.equal(stored.tracking_state, "pickup_ready");
+  assert.match(stored.status_text, /prochainement disponible/i);
+
+  await enqueueDailyMonitor(env, new Date("2026-09-03T05:05:00.000Z"));
+  const failedMessage = queued.shift();
+  let retries = 0;
+  let acknowledged = false;
+  const queueMessage = {
+    body: failedMessage.body,
+    ack() { acknowledged = true; },
+    retry() { retries += 1; }
+  };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await processTrackingMessage(queueMessage, env, { fetchImpl: async () => { throw new Error("Temporary Okapi outage"); } });
+  }
+  assert.equal(retries, 3);
+  assert.equal(acknowledged, true);
+  stored = database.prepare("SELECT tracking_state, status_text FROM orders").get();
+  assert.equal(stored.tracking_state, "pickup_ready");
+  assert.match(stored.status_text, /prochainement disponible/i);
+  const failedJob = database.prepare("SELECT status, attempts, last_error FROM monitor_jobs WHERE run_date = '2026-09-03'").get();
+  assert.equal(failedJob.status, "failed");
+  assert.equal(failedJob.attempts, 4);
+  assert.match(failedJob.last_error, /Temporary Okapi outage/);
 });
 
 test("does not let an older browser upload hide a newer pickup-required result", async (context) => {
@@ -146,11 +466,21 @@ test("moves an early fallback record into the discovered Amazon seller account w
     trackingState: "pickup_ready",
     checkedAt: "2026-09-02T07:00:00.000Z"
   });
+  const repeated = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
+    sellerAccountName: "Cheaply France",
+    marketplaceId,
+    trackingState: "pickup_ready",
+    checkedAt: "2026-09-03T07:00:00.000Z"
+  });
 
   const rows = database.prepare("SELECT record_id, account_id, account_name, tracking_state FROM orders").all();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].record_id, initial.recordId);
   assert.equal(enriched.recordId, initial.recordId);
+  assert.equal(repeated.recordId, initial.recordId);
   assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
   assert.equal(rows[0].account_name, "Cheaply France");
   assert.equal(rows[0].tracking_state, "pickup_ready");
@@ -158,6 +488,66 @@ test("moves an early fallback record into the discovered Amazon seller account w
     database.prepare("SELECT account_id FROM seller_accounts ORDER BY account_id").all().map((row) => row.account_id),
     ["amzn1.merchant.o.A19A98AEOKAGHS"]
   );
+});
+
+test("keeps a complete claim package when another browser uploads blank sender fields", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-claim-package",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    claimPayload: {
+      details: "Initial claim message",
+      sender: { email: "claims@example.com", phone: "+33102030405", address1: "1 rue de Paris", city: "Paris" },
+      order: { sku: "SKU-1", quantity: "1" }
+    }
+  });
+  await upsertOrder(db, {
+    ...identity,
+    claimPayload: {
+      details: "Updated claim message",
+      sender: { email: "", phone: "", address1: "", city: "" },
+      order: { sku: "", quantity: "2" }
+    }
+  });
+
+  const payload = JSON.parse(database.prepare("SELECT claim_payload FROM orders").get().claim_payload);
+  assert.equal(payload.details, "Updated claim message");
+  assert.equal(payload.sender.email, "claims@example.com");
+  assert.equal(payload.sender.address1, "1 rue de Paris");
+  assert.equal(payload.order.sku, "SKU-1");
+  assert.equal(payload.order.quantity, "2");
+});
+
+test("validates uploaded workflow states and preserves the contents-missing claim reason", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "404-6709725-6157921",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-enums",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, {
+    ...identity,
+    trackingState: "invented-state",
+    claimReason: "invented-reason",
+    claimStatus: "invented-status"
+  });
+  let row = database.prepare("SELECT tracking_state, claim_reason, claim_status FROM orders").get();
+  assert.equal(row.tracking_state, "unknown");
+  assert.equal(row.claim_reason, "other");
+  assert.equal(row.claim_status, "none");
+
+  await upsertOrder(db, { ...identity, claimReason: "contents_missing", claimStatus: "requested" });
+  row = database.prepare("SELECT claim_reason, claim_status FROM orders").get();
+  assert.equal(row.claim_reason, "contents_missing");
+  assert.equal(row.claim_status, "requested");
 });
 
 test("stores only a matching Amazon Seller Central order URL", async (context) => {

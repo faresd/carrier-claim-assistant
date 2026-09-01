@@ -6,6 +6,7 @@
   const parser = globalThis.LaPosteOrderParser;
   const rules = globalThis.CarrierClaimRules;
   const outcomeRules = globalThis.CarrierClaimOutcomeRules;
+  const trackingRecords = globalThis.CarrierTrackingRecords;
   let order = parser.parseOrderDetails(document.body.innerText, location.href);
   let carrier = rules.detectCarrier(order);
   const state = { result: null, recommendation: null, checkedAt: "", checking: false, requestId: null, outcome: null, noteAttempts: 0 };
@@ -50,6 +51,44 @@
     }) || null;
   }
 
+  function isVisibleControl(node) {
+    if (!node || node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(node);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  }
+
+  function sellerNotesSaveButton(control) {
+    const selectors = 'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"]';
+    const regions = [];
+    let region = control.closest("form,section,article");
+    if (region) regions.push(region);
+    region = control.parentElement;
+    for (let depth = 0; region && depth < 5; depth += 1, region = region.parentElement) {
+      const description = rules.normalize(region.innerText?.slice(0, 500) || "");
+      if (/seller notes|notes vendeur|records only|pour vos archives|ne sera pas affiche/.test(description)) {
+        regions.push(region);
+      }
+    }
+
+    const seen = new Set();
+    for (const candidateRegion of regions) {
+      for (const candidate of candidateRegion.querySelectorAll(selectors)) {
+        if (seen.has(candidate)) continue;
+        seen.add(candidate);
+        const label = rules.normalize([
+          candidate.innerText,
+          candidate.value,
+          candidate.getAttribute("aria-label"),
+          candidate.getAttribute("title")
+        ].filter(Boolean).join(" "));
+        if (!/^(save|save notes?|enregistrer|enregistrer les notes?|sauvegarder|mettre a jour|update)(\b|$)/.test(label)) continue;
+        if (candidate.disabled || candidate.getAttribute("aria-disabled") === "true" || !isVisibleControl(candidate)) continue;
+        return candidate;
+      }
+    }
+    return null;
+  }
+
   function controlText(control) {
     return "value" in control ? String(control.value || "") : String(control.textContent || "");
   }
@@ -73,11 +112,14 @@
 
   async function markSellerNoteSaved(outcome) {
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcomes = { ...(stored.claimOutcomesByOrder || {}) };
-    const saved = outcomes[outcome.orderId];
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const savedEntry = trackingRecords.findRecordEntry(outcomes, outcome);
+    const saved = savedEntry?.value;
     if (!saved || saved.id !== outcome.id) return;
-    outcomes[outcome.orderId] = { ...saved, noteSaved: true };
-    state.outcome = outcomes[outcome.orderId];
+    const key = trackingRecords.recordKey(saved);
+    if (savedEntry.key !== key) delete outcomes[savedEntry.key];
+    outcomes[key] = { ...saved, noteSaved: true };
+    state.outcome = outcomes[key];
     await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
   }
 
@@ -89,8 +131,12 @@
     const maximumLength = Number(control.maxLength) > 0 ? Number(control.maxLength) : 4000;
     const next = outcomeRules.appendSellerNote(existing, outcome.sellerNote, maximumLength);
     if (next !== existing) setControlText(control, next);
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    const saved = controlText(control) === next && next.includes(outcome.sellerNote);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const saveButton = next !== existing ? sellerNotesSaveButton(control) : null;
+    if (saveButton) saveButton.click();
+    await new Promise((resolve) => setTimeout(resolve, saveButton ? 900 : 650));
+    const currentControl = sellerNotesControl() || control;
+    const saved = controlText(currentControl) === next && next.includes(outcome.sellerNote);
     if (saved) await markSellerNoteSaved(outcome);
     return saved;
   }
@@ -113,8 +159,24 @@
   async function storedOutcomeForOrder() {
     if (!order.orderId) return null;
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcome = stored.claimOutcomesByOrder?.[order.orderId] || null;
-    return outcome?.trackingNumber === order.trackingNumber ? outcome : null;
+    const outcome = trackingRecords.findRecord(stored.claimOutcomesByOrder || {}, order);
+    if (outcome?.trackingNumber === order.trackingNumber) return outcome;
+
+    const remote = await chrome.runtime.sendMessage({
+      type: "GET_TRACKED_RECORDS",
+      refresh: true,
+      orderIds: [order.orderId]
+    }).catch(() => null);
+    const record = remote?.ok ? trackingRecords.findRecord(remote.records || {}, order) : null;
+    const synchronized = trackingRecords.claimOutcomeForRecord(record);
+    if (!synchronized || synchronized.trackingNumber !== order.trackingNumber) return null;
+    synchronized.sellerNote = outcomeRules.buildSellerNote(synchronized);
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const previous = trackingRecords.findRecordEntry(outcomes, synchronized);
+    if (previous?.key && previous.key !== synchronized.recordId) delete outcomes[previous.key];
+    outcomes[synchronized.recordId] = synchronized;
+    await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
+    return synchronized;
   }
 
   async function recordExistingClaim(reference, reason) {
@@ -133,6 +195,9 @@
       carrier: carrier.id,
       orderId: order.orderId,
       trackingNumber: order.trackingNumber,
+      sellerAccountId: order.sellerAccountId || "sellercentral.amazon.fr",
+      sellerAccountName: order.sellerAccountName || "Seller Central account",
+      marketplaceId: order.marketplaceId || "A13V1IB3VIYZZH",
       reason: reason || state.recommendation?.reason || "other",
       reference: normalizedReference,
       confirmationText: "Existing carrier claim recorded from its confirmation reference.",
@@ -140,8 +205,12 @@
       noteSaved: false
     };
     outcome.sellerNote = outcomeRules.buildSellerNote(outcome);
+    outcome.recordId = trackingRecords.recordKey(outcome);
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
-    const outcomes = { ...(stored.claimOutcomesByOrder || {}), [order.orderId]: outcome };
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const previous = trackingRecords.findRecordEntry(outcomes, outcome);
+    if (previous?.key && previous.key !== outcome.recordId) delete outcomes[previous.key];
+    outcomes[outcome.recordId] = outcome;
     await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
     await chrome.runtime.sendMessage({
       type: "REGISTER_TRACKED_ORDER",
@@ -167,7 +236,8 @@
   async function storedDeliveredAuditForOrder() {
     if (!order.orderId || !order.trackingNumber) return null;
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
-    const audit = stored.orderAuditResultsByOrder?.[order.orderId] || null;
+    const audits = stored.orderAuditResultsByOrder || {};
+    const audit = audits[trackingRecords.recordKey(order)] || audits[order.orderId] || null;
     if (audit?.order?.trackingNumber !== order.trackingNumber) return null;
     const auditedCarrierId = audit?.result?.carrier || audit?.recommendation?.carrier?.id || "";
     if (auditedCarrierId && auditedCarrierId !== carrier.id) return null;
@@ -179,7 +249,9 @@
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
     const audits = { ...(stored.orderAuditResultsByOrder || {}) };
     const checkedAt = result?.checkedAt || new Date().toISOString();
-    audits[order.orderId] = {
+    const key = trackingRecords.recordKey(order);
+    delete audits[order.orderId];
+    audits[key] = {
       order: { ...order },
       result: result || null,
       recommendation: recommendation || null,
@@ -194,6 +266,7 @@
     if (!order.orderId) return;
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
     const audits = { ...(stored.orderAuditResultsByOrder || {}) };
+    delete audits[trackingRecords.recordKey(order)];
     delete audits[order.orderId];
     await chrome.storage.local.set({ orderAuditResultsByOrder: audits });
     state.checkedAt = "";
@@ -534,6 +607,16 @@
     ].join("|");
   }
 
+  function resetShipmentState() {
+    state.result = null;
+    state.recommendation = null;
+    state.checkedAt = "";
+    state.checking = false;
+    state.requestId = null;
+    state.outcome = null;
+    state.noteAttempts = 0;
+  }
+
   async function refreshOrderFromPage() {
     const nextOrder = parser.enrichSellerContext(parser.parseOrderDetails(document.body.innerText, location.href), document, location.href);
     const signature = orderSignature(nextOrder);
@@ -562,6 +645,7 @@
       return;
     }
 
+    if (shipmentChanged) resetShipmentState();
     chrome.runtime.sendMessage({
       type: "REGISTER_TRACKED_ORDER",
       order,
@@ -571,14 +655,6 @@
     }).catch(() => {});
 
     if (!shipmentChanged) return;
-
-    state.result = null;
-    state.recommendation = null;
-    state.checkedAt = "";
-    state.checking = false;
-    state.requestId = null;
-    state.outcome = null;
-    state.noteAttempts = 0;
 
     const savedOutcome = await storedOutcomeForOrder();
     if (savedOutcome) {

@@ -47,6 +47,16 @@
     }
   }
 
+  function defaultClaimReason(order) {
+    if (["lost", "returned", "delayed", "damaged", "delivered_missing", "contents_missing", "other"].includes(order.claimReason)) {
+      return order.claimReason;
+    }
+    if (["returning", "pickup_ready"].includes(order.trackingState)) return "returned";
+    if (order.trackingState === "damaged") return "damaged";
+    if (order.trackingState === "lost") return "lost";
+    return "other";
+  }
+
   async function api(path, options = {}) {
     const response = await fetch(path, {
       ...options,
@@ -275,7 +285,7 @@
       }
       if (button.dataset.launchClaim) {
         const claimData = claimPackage(order);
-        const reason = prompt("Claim reason: lost, returned, delayed, damaged, delivered_missing, or other", order.claimReason !== "none" ? order.claimReason : order.trackingState === "returning" ? "returned" : "lost");
+        const reason = prompt("Claim reason: lost, returned, delayed, damaged, delivered_missing, contents_missing, or other", defaultClaimReason(order));
         if (!reason) return;
         const details = prompt("Review or edit the claim message", claimData.details || order.claimTitle || order.statusText || "");
         if (!details) return;

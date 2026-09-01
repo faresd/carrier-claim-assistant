@@ -71,6 +71,12 @@ test("all manifest script and stylesheet paths exist", () => {
   }
 });
 
+test("builds a reproducible store archive", () => {
+  const packageScript = fs.readFileSync(path.join(root, "scripts", "package-extension.sh"), "utf8");
+  assert.match(packageScript, /touch -t 198001010000/);
+  assert.match(packageScript, /sort \| zip -X/);
+});
+
 test("ships portable extension icons and no personal sender defaults", () => {
   assert.deepEqual(manifest.icons, {
     16: "icons/icon16.png",
@@ -129,9 +135,17 @@ test("renders recipient name and postal address beside the title selector", () =
 test("persists successful claims to Seller Notes and a sent button state", () => {
   assert.match(amazonScript, /Claim sent ·/);
   assert.match(amazonScript, /claimOutcomesByOrder/);
+  assert.match(amazonScript, /type:\s*"GET_TRACKED_RECORDS"/);
+  assert.match(amazonScript, /claimOutcomeForRecord/);
   assert.match(amazonScript, /sellerNotesControl/);
+  assert.match(amazonScript, /sellerNotesSaveButton/);
+  assert.match(amazonScript, /if \(saveButton\) saveButton\.click\(\)/);
   assert.match(amazonScript, /Record existing claim/);
   assert.match(assistantCss, /data-state="sent"/);
+});
+
+test("clears prior shipment state before registering an Amazon SPA navigation", () => {
+  assert.match(amazonScript, /if \(shipmentChanged\) resetShipmentState\(\);\s*chrome\.runtime\.sendMessage\(\{\s*type: "REGISTER_TRACKED_ORDER"/);
 });
 
 test("makes both carrier confirmation panels collapsible", () => {
@@ -164,6 +178,8 @@ test("wires the bounded Manage Orders audit dashboard", () => {
   assert.match(ordersListScript, /START_ORDER_AUDIT/);
   assert.match(ordersListScript, /RELEASE_ORDER_AUDIT_WORKER/);
   assert.match(ordersListScript, /Last checked:/);
+  assert.match(ordersListScript, /observedLocation: `\$\{location\.pathname\}\$\{location\.search\}`/);
+  assert.match(ordersListScript, /visibleOrderIds\.has\(orderId\)/);
   assert.match(auditorScript, /ORDER_AUDIT_DETAILS/);
   assert.match(assistantCss, /\.lpca-order-badge/);
   assert.match(assistantCss, /\.lpca-order-status-time/);

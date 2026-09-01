@@ -12,6 +12,21 @@ test("detects urgent sender pickup only in a return context", () => {
   assert.equal(records.trackingState({
     statusText: "Votre colis est disponible au point relais pour le destinataire"
   }), "unknown");
+  assert.equal(records.trackingState({
+    statusText: "Votre colis est disponible au bureau de poste pour le destinataire",
+    summaryText: "À défaut de retrait, il sera retourné à l'expéditeur"
+  }), "unknown");
+});
+
+test("lets the current delivered or lost event override older return history", () => {
+  assert.equal(records.trackingState({
+    statusText: "Votre colis a été livré.",
+    summaryText: "Votre colis est en retour à l'expéditeur."
+  }), "delivered");
+  assert.equal(records.trackingState({
+    statusText: "Votre colis ne peut plus être localisé.",
+    summaryText: "Votre colis est en retour à l'expéditeur."
+  }), "lost");
 });
 
 test("creates a multi-account record key and return badge", () => {
@@ -71,4 +86,49 @@ test("enriching the seller account corrects an earlier fallback record key", () 
     }
   });
   assert.equal(record.recordId, "merchant-real|A13V1IB3VIYZZH|111-2222222-3333333");
+});
+
+test("keeps the same Amazon order number isolated across seller accounts", () => {
+  const orderId = "999-1111111-2222222";
+  const first = {
+    recordId: `merchant-a|amazon-fr|${orderId}`,
+    orderId,
+    sellerAccountId: "merchant-a",
+    marketplaceId: "amazon-fr",
+    trackingNumber: "CC000000001FR"
+  };
+  const second = {
+    recordId: `merchant-b|amazon-fr|${orderId}`,
+    orderId,
+    sellerAccountId: "merchant-b",
+    marketplaceId: "amazon-fr",
+    trackingNumber: "XY123456789FR"
+  };
+  const collection = records.rekeyRecords({ [orderId]: first, second });
+
+  assert.equal(records.findRecord(collection, first).trackingNumber, "CC000000001FR");
+  assert.equal(records.findRecord(collection, second).trackingNumber, "XY123456789FR");
+  assert.equal(records.findRecord(collection, { orderId }), null);
+  assert.deepEqual(Object.keys(collection).sort(), [first.recordId, second.recordId].sort());
+});
+
+test("reconstructs a sent claim outcome from a synchronized server record", () => {
+  const outcome = records.claimOutcomeForRecord({
+    recordId: "merchant-a|amazon-fr|111-2222222-3333333",
+    accountId: "merchant-a",
+    accountName: "Cheaply France",
+    marketplaceId: "amazon-fr",
+    orderId: "111-2222222-3333333",
+    trackingNumber: "CC000000001FR",
+    carrierId: "laposte",
+    claimStatus: "sent",
+    claimReason: "lost",
+    claimReference: "COL-91855121",
+    claimSubmittedAt: "2026-09-01T08:00:00.000Z"
+  });
+  assert.equal(outcome.recordId, "merchant-a|amazon-fr|111-2222222-3333333");
+  assert.equal(outcome.reference, "COL-91855121");
+  assert.equal(outcome.sellerAccountId, "merchant-a");
+  assert.equal(outcome.noteSaved, false);
+  assert.equal(records.claimOutcomeForRecord({ orderId: "111-2222222-3333333", claimStatus: "none" }), null);
 });

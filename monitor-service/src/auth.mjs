@@ -234,10 +234,6 @@ export async function csrfTokenForSession(session, secret) {
 }
 
 export async function dashboardAdminAuth(request, env) {
-  const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || "";
-  if (env.ADMIN_TOKEN && bearer && constantTimeEqual(bearer, env.ADMIN_TOKEN)) {
-    return { authorized: true, method: "token", principal: { sub: "emergency-admin", email: "", role: "admin", name: "Emergency admin" } };
-  }
   const session = await readDashboardSession(request, env);
   return session
     ? { authorized: true, method: "session", principal: session }
@@ -270,6 +266,13 @@ export async function handleDashboardAuth(request, env, url) {
     }, { headers: { "cache-control": "no-store" } });
   }
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+    const session = await readDashboardSession(request, env);
+    if (!session) return Response.json({ error: "Unauthorized" }, { status: 401, headers: { "cache-control": "no-store" } });
+    const supplied = request.headers.get("x-csrf-token") || "";
+    const expected = await csrfTokenForSession(session, env.SESSION_SECRET);
+    if (!supplied || !constantTimeEqual(supplied, expected)) {
+      return Response.json({ error: "Invalid or missing CSRF token" }, { status: 403, headers: { "cache-control": "no-store" } });
+    }
     return Response.json({ ok: true }, {
       headers: { "cache-control": "no-store", "set-cookie": cookie(SESSION_COOKIE, "", 0) }
     });

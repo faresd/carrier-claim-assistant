@@ -2,6 +2,11 @@ import { dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./a
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
+const TRACKING_STATES = new Set(["unknown", "in_transit", "returning", "pickup_ready", "lost", "damaged", "delivered", "resolved"]);
+const CLAIM_REASONS = new Set(["lost", "returned", "delayed", "damaged", "delivered_missing", "contents_missing", "other"]);
+const CLAIM_STATUSES = new Set(["none", "requested", "sent"]);
+const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
+const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
   chronopost: "https://www.chronopost.fr/service-client-en-ligne/home/iv4.html?lang=fr_FR"
@@ -19,16 +24,24 @@ export function normalize(value) {
 export function classifyTrackingState(statusText, summaryText = "") {
   const current = normalize(statusText);
   const all = normalize(`${statusText || ""} ${summaryText || ""}`);
-  const returnContext = /retour(?:ne|nee|ne)?(?:\s+|.*\s)a l'expediteur|retour expediteur|renvoye a l'expediteur|returned to sender|return to sender|retour de votre envoi/.test(all);
+  const returnPattern = /retour(?:ne|nee|ne)?(?:\s+|.*\s)a l'expediteur|retour expediteur|renvoye a l'expediteur|returned to sender|return to sender|retour de votre envoi/;
+  const futureReturnPattern = /(?:sera|serait|pourra|pourrait|va|doit|devra) (?:etre )?(?:retourne|renvoye) a l'expediteur|(?:sans|faute de|a defaut de|en l'absence de) (?:votre )?retrait.*(?:retour|expediteur)|passe ce delai.*(?:retour|expediteur)/;
+  const returnContext = (returnPattern.test(current) && !futureReturnPattern.test(current)) ||
+    (returnPattern.test(all) && !futureReturnPattern.test(all));
   const senderPickup = /mis(?:e)? a disposition de l'expediteur|disponible pour l'expediteur|expediteur.*(?:retirer|retrait|disponible)|retour.*(?:a retirer|disponible|point de retrait|bureau de poste|agence)/.test(current);
   const pickup = /(?:disponible|vous attend|a retirer|en attente de retrait|mis(?:e)? a disposition).*(?:point de retrait|bureau de poste|agence|relais|site de retrait)|(?:point de retrait|bureau de poste|agence|relais).*(?:disponible|vous attend|a retirer|retrait)/.test(current);
-  if (senderPickup || (returnContext && pickup)) return "pickup_ready";
-  if (returnContext) return "returning";
-  if (/perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/.test(all)) return "lost";
-  if (/endommage|deteriore|avarie|damaged|damage/.test(all)) return "damaged";
+  const lostPattern = /perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/;
+  const damagedPattern = /endommage|deteriore|avarie|damaged|damage/;
   const delivered = /(?:^|\b)(?:a (?:bien )?ete|est) livre\b|livraison (?:a ete )?effectuee|remis au destinataire|^livre\b|\bdelivered\b/.test(current) &&
     !/non livre|pas livre|jamais livre|impossible de livrer|n'a pas pu.*remis|n'avons pu.*remettre|echec de livraison|tentative de livraison/.test(current);
+
+  if (senderPickup || (returnContext && pickup)) return "pickup_ready";
   if (delivered) return "delivered";
+  if (lostPattern.test(current)) return "lost";
+  if (damagedPattern.test(current)) return "damaged";
+  if (returnContext) return "returning";
+  if (lostPattern.test(all)) return "lost";
+  if (damagedPattern.test(all)) return "damaged";
   if (/acheminement|en transit|in transit|pris en charge|en cours de livraison|distribution|douane|customs/.test(all)) return "in_transit";
   return "unknown";
 }
@@ -53,6 +66,31 @@ function claimPayloadJson(input) {
   const payload = input?.claimPayload && typeof input.claimPayload === "object" ? input.claimPayload : {};
   const serialized = JSON.stringify(sanitizeJson(payload));
   return serialized.length <= 30000 ? serialized : "{}";
+}
+
+function parsedJsonObject(value) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function mergeClaimValue(previous, incoming) {
+  if (incoming == null || incoming === "") return previous;
+  if (Array.isArray(incoming)) return incoming.length ? incoming : previous;
+  if (typeof incoming !== "object") return incoming;
+  const before = previous && typeof previous === "object" && !Array.isArray(previous) ? previous : {};
+  return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(incoming)])]
+    .map((key) => [key, mergeClaimValue(before[key], incoming[key])])
+    .filter(([, value]) => value !== undefined));
+}
+
+function mergeClaimPayloadJson(previous, incoming) {
+  const merged = sanitizeJson(mergeClaimValue(parsedJsonObject(previous), parsedJsonObject(incoming)));
+  const serialized = JSON.stringify(merged || {});
+  return serialized.length <= 30000 ? serialized : String(previous || "{}");
 }
 
 function safeAmazonOrderUrl(value, orderId) {
@@ -85,18 +123,12 @@ function bearer(request) {
   return request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || "";
 }
 
-function authorized(request, expected) {
-  const actual = bearer(request);
-  return Boolean(expected && actual && actual.length === expected.length && actual === expected);
-}
-
 async function sha256(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function extensionAuthorized(request, env) {
-  if (authorized(request, env.SYNC_TOKEN)) return { authorized: true, deviceId: "master" };
   const token = bearer(request);
   if (!token) return { authorized: false, deviceId: "" };
   const tokenHash = await sha256(token);
@@ -106,9 +138,16 @@ async function extensionAuthorized(request, env) {
   return { authorized: true, deviceId: device.id };
 }
 
+export function allowedApiOrigin(request) {
+  const origin = clean(request.headers.get("origin"), 300);
+  if (origin === DASHBOARD_ORIGIN || EXTENSION_ORIGIN.test(origin)) return origin;
+  return "";
+}
+
 function corsHeaders(request) {
+  const origin = allowedApiOrigin(request);
   return {
-    "access-control-allow-origin": request.headers.get("origin") || "*",
+    ...(origin ? { "access-control-allow-origin": origin } : {}),
     "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
     "access-control-allow-headers": "authorization,content-type,x-csrf-token",
     "access-control-max-age": "86400",
@@ -120,6 +159,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   const orderId = clean(input.orderId, 40);
   const accountId = clean(input.sellerAccountId || input.accountId || "default", 180);
   const marketplaceId = clean(input.marketplaceId || "A13V1IB3VIYZZH", 180);
+  const trackingState = clean(input.trackingState || "unknown", 30);
+  const claimReason = clean(input.claimReason || "none", 50);
+  const claimStatus = clean(input.claimStatus || "none", 30);
   return {
     recordId: `${accountId}|${marketplaceId}|${orderId}`,
     accountId,
@@ -140,14 +182,14 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     recipientCity: clean(input.recipientCity, 120),
     recipientPostalCode: clean(input.recipientPostalCode, 30),
     recipientCountry: clean(input.recipientCountry, 100),
-    trackingState: clean(input.trackingState || "unknown", 30),
+    trackingState: TRACKING_STATES.has(trackingState) ? trackingState : "unknown",
     statusText: clean(input.statusText, 1000),
     statusSummary: clean(input.statusSummary, 5000),
     checkedAt: clean(input.checkedAt, 40),
     claimRecommended: input.claimRecommended ? 1 : 0,
-    claimReason: clean(input.claimReason || "none", 50),
+    claimReason: claimReason === "none" || CLAIM_REASONS.has(claimReason) ? claimReason : "other",
     claimTitle: clean(input.claimTitle, 250),
-    claimStatus: clean(input.claimStatus || "none", 30),
+    claimStatus: CLAIM_STATUSES.has(claimStatus) ? claimStatus : "none",
     claimReference: clean(input.claimReference, 80),
     claimSubmittedAt: clean(input.claimSubmittedAt, 40),
     claimPayload: claimPayloadJson(input),
@@ -166,7 +208,12 @@ export async function upsertOrder(db, input) {
   }
   const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
   let migratedFallbackAccount = "";
-  if (!fallbackAccounts.has(order.accountId)) {
+  const existingAccountOrder = await db.prepare(`SELECT record_id, account_id FROM orders
+    WHERE order_id = ? AND marketplace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 1`)
+    .bind(order.orderId, order.marketplaceId, order.accountId).first();
+  if (existingAccountOrder?.record_id) {
+    order.recordId = existingAccountOrder.record_id;
+  } else if (!fallbackAccounts.has(order.accountId)) {
     const fallback = await db.prepare(`SELECT record_id, account_id FROM orders
       WHERE order_id = ? AND marketplace_id = ? AND account_id IN ('default', 'sellercentral.amazon.fr')
       ORDER BY updated_at DESC LIMIT 1`).bind(order.orderId, order.marketplaceId).first();
@@ -175,6 +222,8 @@ export async function upsertOrder(db, input) {
       migratedFallbackAccount = fallback.account_id;
     }
   }
+  const existingPayload = await db.prepare("SELECT claim_payload FROM orders WHERE record_id = ?").bind(order.recordId).first();
+  order.claimPayload = mergeClaimPayloadJson(existingPayload?.claim_payload, order.claimPayload);
   await db.prepare(`
     INSERT INTO orders (
       record_id, account_id, account_name, marketplace_id, order_id, tracking_number, carrier_id, carrier_label, amazon_url, ship_date, deliver_by, item_value,
@@ -322,10 +371,10 @@ export function normalizeCarrierPayload(payload) {
   };
 }
 
-async function fetchOfficialTracking(trackingNumber, env) {
+export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch) {
   if (!env.LAPOSTE_OKAPI_KEY) throw new Error("LAPOSTE_OKAPI_KEY is not configured.");
   const endpoint = `https://api.laposte.fr/suivi/v2/idships/${encodeURIComponent(trackingNumber)}?lang=fr_FR`;
-  const response = await fetch(endpoint, {
+  const response = await fetchImpl(endpoint, {
     headers: { accept: "application/json", "X-Okapi-Key": env.LAPOSTE_OKAPI_KEY }
   });
   if (!response.ok) throw new Error(`La Poste Suivi returned HTTP ${response.status}.`);
@@ -353,7 +402,7 @@ async function sendMonitorJobs(env, jobs, runDate) {
   }
 }
 
-async function enqueueDailyMonitor(env, date = new Date()) {
+export async function enqueueDailyMonitor(env, date = new Date()) {
   const parts = parisDateParts(date);
   const runDate = `${parts.year}-${parts.month}-${parts.day}`;
   const existing = await env.DB.prepare("SELECT * FROM monitor_runs WHERE run_date = ?").bind(runDate).first();
@@ -364,7 +413,7 @@ async function enqueueDailyMonitor(env, date = new Date()) {
     return { skipped: false, resumed: true, runDate, queuedCount: pending.length };
   }
   const startedAt = date.toISOString();
-  const rows = (await env.DB.prepare("SELECT * FROM orders WHERE tracking_state NOT IN ('delivered', 'resolved') ORDER BY checked_at ASC LIMIT 1000").all()).results || [];
+  const rows = (await env.DB.prepare("SELECT record_id FROM orders WHERE tracking_state NOT IN ('delivered', 'resolved') ORDER BY checked_at ASC").all()).results || [];
   await env.DB.prepare("INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count) VALUES (?, ?, ?, ?)")
     .bind(runDate, startedAt, rows.length ? "" : startedAt, rows.length).run();
   for (let index = 0; index < rows.length; index += 100) {
@@ -382,16 +431,17 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
   const failed = Boolean(error);
   const statements = [];
   if (row && result) {
-    const state = row.tracking_state === "resolved" ? "resolved" : result.trackingState;
+    const state = row.tracking_state === "resolved"
+      ? "resolved"
+      : result.trackingState === "unknown" && row.tracking_state !== "unknown"
+        ? row.tracking_state
+        : result.trackingState;
     statements.push(
       env.DB.prepare(`UPDATE orders SET tracking_state = ?, status_text = ?, status_summary = ?, checked_at = ?, updated_at = ? WHERE record_id = ?`)
         .bind(state, result.statusText, result.statusSummary, now, now, row.record_id),
       env.DB.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code) VALUES (?, ?, ?, ?, ?, ?)`)
         .bind(row.record_id, state, result.statusText, result.eventAt, now, result.rawCode)
     );
-  } else if (failed && row) {
-    statements.push(env.DB.prepare("UPDATE orders SET status_text = ?, updated_at = ? WHERE record_id = ?")
-      .bind(`Daily check failed: ${clean(error, 300)}`, now, row.record_id));
   }
   statements.push(
     env.DB.prepare("UPDATE monitor_jobs SET status = ?, last_error = ?, updated_at = ? WHERE run_date = ? AND record_id = ?")
@@ -406,7 +456,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
   await env.DB.batch(statements);
 }
 
-async function processTrackingMessage(message, env) {
+export async function processTrackingMessage(message, env, { fetchImpl = fetch } = {}) {
   const runDate = clean(message.body?.runDate, 20);
   const recordId = clean(message.body?.recordId, 500);
   const job = await env.DB.prepare("SELECT * FROM monitor_jobs WHERE run_date = ? AND record_id = ?").bind(runDate, recordId).first();
@@ -424,7 +474,7 @@ async function processTrackingMessage(message, env) {
     return;
   }
   try {
-    const result = await fetchOfficialTracking(row.tracking_number, env);
+    const result = await fetchOfficialTracking(row.tracking_number, env, fetchImpl);
     await finishMonitorJob(env, job, { row, result });
     message.ack();
   } catch (error) {
@@ -449,7 +499,7 @@ async function mutateOrder(request, env, recordId, action, deviceId = "master") 
     await env.DB.prepare("UPDATE orders SET tracking_state = COALESCE(NULLIF(resolution_previous_state, ''), 'returning'), resolution_previous_state = '', resolved_at = '', resolution_note = '', updated_at = ? WHERE record_id = ?")
       .bind(now, recordId).run();
   } else if (action === "claim") {
-    const reason = ["lost", "returned", "delayed", "damaged", "delivered_missing", "other"].includes(body.reason) ? body.reason : "other";
+    const reason = CLAIM_REASONS.has(body.reason) ? body.reason : "other";
     await env.DB.prepare("UPDATE orders SET claim_status = 'requested', claim_reason = ?, claim_recommended = 1, updated_at = ? WHERE record_id = ?")
       .bind(reason, now, recordId).run();
   } else if (action === "ack-pickup") {
@@ -478,8 +528,7 @@ async function createClaimLaunch(request, env, recordId) {
   const carrier = row.carrier_id === "chronopost" || /chrono/i.test(row.carrier_label) ? "chronopost" : "laposte";
   const body = await request.json().catch(() => ({}));
   const payload = parsedClaimPayload(row);
-  const allowedReasons = ["lost", "returned", "delayed", "damaged", "delivered_missing", "other"];
-  const reason = allowedReasons.includes(body.reason) ? body.reason : allowedReasons.includes(row.claim_reason) ? row.claim_reason : "other";
+  const reason = CLAIM_REASONS.has(body.reason) ? body.reason : CLAIM_REASONS.has(row.claim_reason) ? row.claim_reason : "other";
   payload.carrier = carrier;
   payload.reason = reason;
   payload.details = clean(body.details || payload.details || row.claim_title || `Commande Amazon ${row.order_id} · ${row.status_text}`, 500);
@@ -571,7 +620,7 @@ async function claimPairingCode(request, env) {
   const code = clean(body.code, 6);
   const now = new Date();
   const origin = request.headers.get("origin") || "";
-  if (origin && !origin.startsWith("chrome-extension://")) throw new Error("Pairing is only available from the Chrome/Brave extension.");
+  if (origin && !EXTENSION_ORIGIN.test(origin)) throw new Error("Pairing is only available from the Chrome/Brave extension.");
   const remoteAddress = request.headers.get("cf-connecting-ip") || "unknown";
   const windowNumber = Math.floor(now.getTime() / (15 * 60000));
   const attemptKey = await sha256(`pairing:${remoteAddress}:${windowNumber}`);
@@ -684,7 +733,12 @@ async function api(request, env, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+    if (request.method === "OPTIONS") {
+      if (request.headers.get("origin") && !allowedApiOrigin(request)) {
+        return new Response(null, { status: 403, headers: { vary: "Origin" } });
+      }
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
     if (url.pathname === "/api/health") return json({ ok: true, service: "carrier-return-monitor" }, 200, corsHeaders(request));
     const authResponse = await handleDashboardAuth(request, env, url);
     if (authResponse) return authResponse;

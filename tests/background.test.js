@@ -74,6 +74,7 @@ require("../src/shared/carrier-rules.js");
 require("../src/shared/claim-outcome.js");
 require("../src/shared/tracking-records.js");
 require("../src/background.js");
+const trackingRecords = globalThis.CarrierTrackingRecords;
 
 function send(message, sender = {}) {
   return new Promise((resolve, reject) => {
@@ -152,6 +153,29 @@ test("stores a claim-ready order package with sender, recipient, item, and carri
   assert.match(response.record.claimPayload.details, /CC000000003FR/);
 });
 
+test("stores duplicate Amazon order numbers independently for two seller accounts", async () => {
+  const orderId = "999-1111111-2222222";
+  local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false };
+  const common = { orderId, carrier: "Colissimo", marketplaceId: "A13V1IB3VIYZZH" };
+  await send({
+    type: "REGISTER_TRACKED_ORDER",
+    order: { ...common, sellerAccountId: "merchant-a", trackingNumber: "CC000000011FR" },
+    result: { statusText: "Retour à l'expéditeur", checkedAt: "2026-09-01T07:00:00.000Z" }
+  });
+  await send({
+    type: "REGISTER_TRACKED_ORDER",
+    order: { ...common, sellerAccountId: "merchant-b", trackingNumber: "CC000000022FR" },
+    result: { statusText: "Votre colis a été livré.", checkedAt: "2026-09-01T08:00:00.000Z" }
+  });
+
+  const first = trackingRecords.findRecord(local.trackedOrdersByOrder, { ...common, sellerAccountId: "merchant-a" });
+  const second = trackingRecords.findRecord(local.trackedOrdersByOrder, { ...common, sellerAccountId: "merchant-b" });
+  assert.equal(first.trackingNumber, "CC000000011FR");
+  assert.equal(first.trackingState, "returning");
+  assert.equal(second.trackingNumber, "CC000000022FR");
+  assert.equal(second.trackingState, "delivered");
+});
+
 test("pairing immediately backfills cached orders and marks them synchronized", async () => {
   const originalFetch = global.fetch;
   const orderId = "222-3333333-4444444";
@@ -189,7 +213,8 @@ test("pairing immediately backfills cached orders and marks them synchronized", 
     assert.equal(response.uploadedOrders, 1);
     assert.equal(local.claimSettings.cloudSyncEnabled, true);
     assert.equal(local.claimSettings.monitorAccessToken, "device-token");
-    assert.match(local.trackedOrdersByOrder[orderId].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const recordKey = `merchant-one|A13V1IB3VIYZZH|${orderId}`;
+    assert.match(local.trackedOrdersByOrder[recordKey].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.ok(requests.some((request) => request.url === "https://tracking.cheaply.fr/api/orders"));
   } finally {
     global.fetch = originalFetch;
@@ -212,7 +237,7 @@ test("a revoked device token disables cloud sync without deleting local history"
   try {
     const response = await send({ type: "GET_TRACKED_RECORDS", refresh: true });
     assert.equal(response.ok, true);
-    assert.equal(response.records["111-2222222-3333333"].trackingState, "returning");
+    assert.equal(trackingRecords.findRecord(response.records, { orderId: "111-2222222-3333333" }).trackingState, "returning");
     assert.equal(local.claimSettings.cloudSyncEnabled, false);
     assert.equal(local.claimSettings.monitorAccessToken, "");
   } finally {
@@ -347,12 +372,13 @@ test("stores a successful claim, notifies Amazon, and clears the pending submiss
   assert.equal(response.ok, true);
   assert.equal(response.noteSaved, false);
   assert.equal(session.pendingLaPosteClaim, undefined);
-  const outcome = local.claimOutcomesByOrder[claim.order.orderId];
+  const outcome = trackingRecords.findRecord(local.claimOutcomesByOrder, claim.order);
   assert.equal(outcome.reference, "LP-8472619");
   assert.equal(outcome.trackingNumber, "CC000000002FR");
   assert.match(outcome.sellerNote, /Référence : LP-8472619/);
-  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimStatus, "sent");
-  assert.equal(local.trackedOrdersByOrder[claim.order.orderId].claimReference, "LP-8472619");
+  const record = trackingRecords.findRecord(local.trackedOrdersByOrder, claim.order);
+  assert.equal(record.claimStatus, "sent");
+  assert.equal(record.claimReference, "LP-8472619");
   assert.equal(sentMessages.at(-1).tabId, 55);
   assert.equal(sentMessages.at(-1).message.type, "CLAIM_SUBMISSION_SUCCESS");
 });
@@ -410,8 +436,9 @@ test("uploads the successful claim reference and sent state to the return monito
     assert.equal(record.claimStatus, "sent");
     assert.equal(record.claimReference, "CHR-2026-8472619");
     assert.match(record.claimSubmittedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.equal(local.trackedOrdersByOrder[claim.order.orderId].cloudSyncError, "");
-    assert.match(local.trackedOrdersByOrder[claim.order.orderId].cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const saved = trackingRecords.findRecord(local.trackedOrdersByOrder, claim.order);
+    assert.equal(saved.cloudSyncError, "");
+    assert.match(saved.cloudSyncedAt, /^\d{4}-\d{2}-\d{2}T/);
   } finally {
     global.fetch = originalFetch;
     local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false, monitorAccessToken: "" };
@@ -441,7 +468,7 @@ test("recovers a referenced La Poste confirmation when the final carrier button 
   });
 
   assert.equal(response.ok, true);
-  assert.equal(local.claimOutcomesByOrder[claim.order.orderId].reference, "COL-91855121");
+  assert.equal(trackingRecords.findRecord(local.claimOutcomesByOrder, claim.order).reference, "COL-91855121");
   assert.equal(session.pendingLaPosteClaim, undefined);
 });
 

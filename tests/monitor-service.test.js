@@ -24,6 +24,8 @@ test("monitor deployment schedules a DST-safe morning queue with bounded carrier
   assert.match(worker, /return parisDateParts\(date\)\.hour === "07"/);
   assert.match(worker, /async queue\(batch, env\)/);
   assert.match(worker, /delaySeconds:\s*600/);
+  assert.match(worker, /SELECT record_id FROM orders WHERE tracking_state NOT IN \('delivered', 'resolved'\) ORDER BY checked_at ASC/);
+  assert.doesNotMatch(worker, /tracking_state NOT IN \('delivered', 'resolved'\).*LIMIT 1000/);
 });
 
 test("monitor schema keeps multi-account history, idempotent jobs, devices, claim launches, and notification receipts", () => {
@@ -43,9 +45,10 @@ test("browser pairing is short-lived, rate-limited, and revocable from the dashb
   assert.match(worker, /now\.getTime\(\) \+ 10 \* 60000/);
   assert.match(worker, /attempt_count/);
   assert.match(worker, /> 10/);
-  assert.match(worker, /chrome-extension:\/\//);
+  assert.match(worker, /EXTENSION_ORIGIN\.test\(origin\)/);
   assert.match(worker, /\/api\/devices/);
   assert.match(worker, /revoked_at = \?/);
+  assert.doesNotMatch(worker, /SYNC_TOKEN/);
   assert.match(dashboard, /id="device-list"/);
   assert.match(dashboardScript, /data-revoke-device/);
 });
@@ -57,6 +60,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboard, /id="account-filter"/);
   assert.match(dashboardScript, /data-launch-claim/);
   assert.match(dashboardScript, /Review or edit the claim message/);
+  assert.match(dashboardScript, /\["returning", "pickup_ready"\].*return "returned"/);
+  assert.match(dashboardScript, /contents_missing/);
   assert.match(dashboardScript, /data-resolve/);
   assert.match(dashboardScript, /\/events/);
   assert.match(dashboardScript, /Saved tracking history/);
@@ -68,6 +73,9 @@ test("dashboard assets are protected by a restrictive browser security policy", 
   assert.match(worker, /frame-ancestors 'none'/);
   assert.match(worker, /x-content-type-options/);
   assert.match(worker, /permissions-policy/);
+  assert.match(worker, /DASHBOARD_ORIGIN = "https:\/\/tracking\.cheaply\.fr"/);
+  assert.match(worker, /EXTENSION_ORIGIN = \/\^chrome-extension:/);
+  assert.doesNotMatch(worker, /access-control-allow-origin": request\.headers\.get\("origin"\) \|\| "\*"/);
 });
 
 test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", () => {
@@ -85,6 +93,7 @@ test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", 
   assert.match(dashboard, /Sign in with Cheaply/);
   assert.doesNotMatch(dashboard, /Admin token/);
   assert.doesNotMatch(dashboardScript, /carrierMonitorAdminToken.*getItem/);
+  assert.doesNotMatch(auth, /ADMIN_TOKEN/);
   assert.match(deployment, /MONITOR_SESSION_SECRET/);
   assert.match(deployment, /MONITOR_TRACKING_CLIENT_SECRET/);
   assert.match(deployment, /vars\.CF_ACCOUNT_ID/);

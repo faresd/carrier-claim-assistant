@@ -7,6 +7,7 @@ const outcomeRules = globalThis.CarrierClaimOutcomeRules;
 const trackingRecords = globalThis.CarrierTrackingRecords;
 const CLAIM_OUTCOMES_KEY = "claimOutcomesByOrder";
 const TRACKED_ORDERS_KEY = "trackedOrdersByOrder";
+const ORDER_AUDITS_KEY = "orderAuditResultsByOrder";
 const MONITOR_ALERT_ALARM = "carrierReturnMonitorAlerts";
 const MONITOR_ORIGIN = "https://tracking.cheaply.fr";
 
@@ -49,7 +50,9 @@ const STATUS_TIMEOUT_MS = 60000;
 const ORDER_AUDIT_LOAD_TIMEOUT_MS = 30000;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
-  const stored = await chrome.storage.local.get(["senderProfile", "claimSettings"]);
+  const stored = await chrome.storage.local.get([
+    "senderProfile", "claimSettings", TRACKED_ORDERS_KEY, CLAIM_OUTCOMES_KEY, ORDER_AUDITS_KEY
+  ]);
   const previousSettings = stored.claimSettings || {};
   let monitorOriginChanged = false;
   if (previousSettings.monitorServerUrl) {
@@ -67,7 +70,10 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       monitorServerUrl: MONITOR_ORIGIN,
       cloudSyncEnabled: monitorOriginChanged ? false : previousSettings.cloudSyncEnabled === true,
       monitorAccessToken: monitorOriginChanged ? "" : String(previousSettings.monitorAccessToken || "")
-    }
+    },
+    [TRACKED_ORDERS_KEY]: trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {}),
+    [CLAIM_OUTCOMES_KEY]: trackingRecords.rekeyRecords(stored[CLAIM_OUTCOMES_KEY] || {}),
+    [ORDER_AUDITS_KEY]: trackingRecords.rekeyRecords(stored[ORDER_AUDITS_KEY] || {})
   });
   await scheduleMonitorAlertPolling();
   if (details.reason === "install") await chrome.runtime.openOptionsPage();
@@ -211,57 +217,61 @@ function buildClaimPayload(order, record, senderProfile, recommendation, result 
 async function saveTrackingRecord(order, result = {}, recommendation = null, outcome = null) {
   if (!order?.orderId || !order?.trackingNumber || !trackingRecords) return null;
   const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", "senderProfile", CLAIM_OUTCOMES_KEY]);
-  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
-  const previous = records[order.orderId] || null;
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  const previousEntry = trackingRecords.findRecordEntry(records, order);
+  const previous = previousEntry?.value || null;
   const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
   const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
-  const resolvedOutcome = outcome || stored[CLAIM_OUTCOMES_KEY]?.[order.orderId] || null;
+  const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
   const record = {
     ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
     cloudSyncedAt: "",
     cloudSyncError: ""
   };
   record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
-  records[order.orderId] = record;
+  if (previousEntry?.key && previousEntry.key !== record.recordId) delete records[previousEntry.key];
+  records[record.recordId] = record;
   await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
   const config = normalizedMonitorConfig(settings);
   if (config.enabled) {
     const attemptedAt = new Date().toISOString();
     await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).then(async () => {
-      records[order.orderId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
+      records[record.recordId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
       await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
     }).catch(async (error) => {
-      records[order.orderId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
+      records[record.recordId] = { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
       await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
     });
   }
-  return records[order.orderId];
+  return records[record.recordId];
 }
 
 async function syncPendingTrackingRecords({ limit = 50 } = {}) {
   const config = await monitorConfig();
   if (!config.enabled) return { ok: true, skipped: true, uploaded: 0, remaining: 0 };
   const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
   const pending = Object.values(records).filter((record) =>
     record?.orderId && record?.trackingNumber && (!record.cloudSyncedAt || record.cloudSyncError)
   );
   let uploaded = 0;
   let failed = 0;
   for (const record of pending.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)))) {
+    const key = trackingRecords.recordKey(record);
+    if (!key) continue;
     const attemptedAt = new Date().toISOString();
     try {
       await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) });
-      records[record.orderId] = {
-        ...records[record.orderId],
+      records[key] = {
+        ...records[key],
         cloudSyncedAt: attemptedAt,
         cloudSyncAttemptedAt: attemptedAt,
         cloudSyncError: ""
       };
       uploaded += 1;
     } catch (error) {
-      records[record.orderId] = {
-        ...records[record.orderId],
+      records[key] = {
+        ...records[key],
         cloudSyncAttemptedAt: attemptedAt,
         cloudSyncError: error.message
       };
@@ -275,11 +285,15 @@ async function syncPendingTrackingRecords({ limit = 50 } = {}) {
 
 async function mergeRemoteTrackingRecords(remoteOrders = []) {
   const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  const records = { ...(stored[TRACKED_ORDERS_KEY] || {}) };
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
   for (const remote of remoteOrders) {
     if (!remote?.orderId) continue;
-    const local = records[remote.orderId] || {};
-    records[remote.orderId] = {
+    const previousEntry = trackingRecords.findRecordEntry(records, remote);
+    const local = previousEntry?.value || {};
+    const key = trackingRecords.recordKey(remote);
+    if (!key) continue;
+    if (previousEntry?.key && previousEntry.key !== key) delete records[previousEntry.key];
+    records[key] = {
       ...local,
       ...remote,
       sourceUrl: remote.amazonUrl || local.sourceUrl || "",
@@ -304,7 +318,9 @@ async function trackedRecords({ refresh = true, orderIds = [] } = {}) {
     }
   }
   const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  return stored[TRACKED_ORDERS_KEY] || {};
+  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+  return records;
 }
 
 async function refreshMonitorAlerts() {
@@ -694,6 +710,9 @@ async function handleClaimSubmissionSuccess(message, sender) {
     carrier: claim.carrier,
     orderId: claim.order?.orderId || "",
     trackingNumber: claim.order?.trackingNumber || "",
+    sellerAccountId: claim.order?.sellerAccountId || "sellercentral.amazon.fr",
+    sellerAccountName: claim.order?.sellerAccountName || "Seller Central account",
+    marketplaceId: claim.order?.marketplaceId || "A13V1IB3VIYZZH",
     reason: claim.reason || "other",
     reference,
     confirmationText: String(message.confirmationText || "").replace(/\s+/g, " ").trim().slice(0, 500),
@@ -701,10 +720,13 @@ async function handleClaimSubmissionSuccess(message, sender) {
     noteSaved: false
   };
   outcome.sellerNote = outcomeRules.buildSellerNote(outcome);
+  outcome.recordId = trackingRecords.recordKey(outcome);
 
   const storedOutcomes = await chrome.storage.local.get(CLAIM_OUTCOMES_KEY);
-  const outcomes = { ...(storedOutcomes[CLAIM_OUTCOMES_KEY] || {}) };
-  if (outcome.orderId) outcomes[outcome.orderId] = outcome;
+  const outcomes = trackingRecords.rekeyRecords(storedOutcomes[CLAIM_OUTCOMES_KEY] || {});
+  const previousOutcome = trackingRecords.findRecordEntry(outcomes, outcome);
+  if (previousOutcome?.key && previousOutcome.key !== outcome.recordId) delete outcomes[previousOutcome.key];
+  if (outcome.recordId) outcomes[outcome.recordId] = outcome;
   await chrome.storage.local.set({ [CLAIM_OUTCOMES_KEY]: outcomes });
   await saveTrackingRecord(claim.order || {}, claim.trackingStatus || {}, claim.recommendation || null, outcome);
   await chrome.storage.session.remove(key);
