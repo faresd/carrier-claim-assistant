@@ -43,7 +43,7 @@ Classification is deterministic. AI is deliberately not required for alerts; an 
    - `LAPOSTE_OKAPI_KEY`
    - `MONITOR_SESSION_SECRET` — a long random secret for the dashboard's secure local session
    - `MONITOR_TRACKING_CLIENT_SECRET` — the `tracking-web` client secret shared only with `auth.cheaply.fr`
-6. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list with the exact callback `https://tracking.cheaply.fr/api/auth/callback`, and store the same client secret there as `TRACKING_CLIENT_SECRET`.
+6. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list using the checked-in [`sso/tracking-web-client.json`](sso/tracking-web-client.json) contract and [`sso/README.md`](sso/README.md) source patch. Store the same client secret there as `TRACKING_CLIENT_SECRET`.
 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
