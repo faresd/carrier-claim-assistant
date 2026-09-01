@@ -159,3 +159,27 @@ test("moves an early fallback record into the discovered Amazon seller account w
     ["amzn1.merchant.o.A19A98AEOKAGHS"]
   );
 });
+
+test("stores only a matching Amazon Seller Central order URL", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-safe-url",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, { ...identity, sourceUrl: "javascript:alert(document.domain)" });
+  assert.equal(database.prepare("SELECT amazon_url FROM orders").get().amazon_url, "");
+
+  const valid = "https://sellercentral.amazon.fr/orders-v3/order/405-4311026-6542766?mons_sel_mcid=merchant-safe-url#temporary-marker";
+  await upsertOrder(db, { ...identity, sourceUrl: valid });
+  const stored = database.prepare("SELECT amazon_url FROM orders").get().amazon_url;
+  assert.equal(stored, "https://sellercentral.amazon.fr/orders-v3/order/405-4311026-6542766?mons_sel_mcid=merchant-safe-url");
+
+  await upsertOrder(db, {
+    ...identity,
+    sourceUrl: "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333"
+  });
+  assert.equal(database.prepare("SELECT amazon_url FROM orders").get().amazon_url, stored);
+});

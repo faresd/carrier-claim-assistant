@@ -55,6 +55,17 @@ function claimPayloadJson(input) {
   return serialized.length <= 30000 ? serialized : "{}";
 }
 
+function safeAmazonOrderUrl(value, orderId) {
+  try {
+    const url = new URL(clean(value, 1000), "https://sellercentral.amazon.fr");
+    if (url.origin !== "https://sellercentral.amazon.fr" || url.pathname !== `/orders-v3/order/${orderId}`) return "";
+    url.hash = "";
+    return url.toString().slice(0, 1000);
+  } catch {
+    return "";
+  }
+}
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
 }
@@ -118,7 +129,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     trackingNumber: clean(input.trackingNumber, 40).toUpperCase(),
     carrierId: clean(input.carrierId, 30),
     carrierLabel: clean(input.carrierLabel || input.carrier, 80),
-    amazonUrl: clean(input.sourceUrl || input.amazonUrl, 1000),
+    amazonUrl: safeAmazonOrderUrl(input.sourceUrl || input.amazonUrl, orderId),
     shipDate: clean(input.shipDate, 100),
     deliverBy: clean(input.deliverBy, 180),
     itemValue: clean(input.itemValue, 80),
