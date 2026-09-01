@@ -331,10 +331,10 @@ export function normalizeCarrierPayload(payload) {
   };
 }
 
-async function fetchOfficialTracking(trackingNumber, env) {
+export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch) {
   if (!env.LAPOSTE_OKAPI_KEY) throw new Error("LAPOSTE_OKAPI_KEY is not configured.");
   const endpoint = `https://api.laposte.fr/suivi/v2/idships/${encodeURIComponent(trackingNumber)}?lang=fr_FR`;
-  const response = await fetch(endpoint, {
+  const response = await fetchImpl(endpoint, {
     headers: { accept: "application/json", "X-Okapi-Key": env.LAPOSTE_OKAPI_KEY }
   });
   if (!response.ok) throw new Error(`La Poste Suivi returned HTTP ${response.status}.`);
@@ -362,7 +362,7 @@ async function sendMonitorJobs(env, jobs, runDate) {
   }
 }
 
-async function enqueueDailyMonitor(env, date = new Date()) {
+export async function enqueueDailyMonitor(env, date = new Date()) {
   const parts = parisDateParts(date);
   const runDate = `${parts.year}-${parts.month}-${parts.day}`;
   const existing = await env.DB.prepare("SELECT * FROM monitor_runs WHERE run_date = ?").bind(runDate).first();
@@ -415,7 +415,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
   await env.DB.batch(statements);
 }
 
-async function processTrackingMessage(message, env) {
+export async function processTrackingMessage(message, env, { fetchImpl = fetch } = {}) {
   const runDate = clean(message.body?.runDate, 20);
   const recordId = clean(message.body?.recordId, 500);
   const job = await env.DB.prepare("SELECT * FROM monitor_jobs WHERE run_date = ? AND record_id = ?").bind(runDate, recordId).first();
@@ -433,7 +433,7 @@ async function processTrackingMessage(message, env) {
     return;
   }
   try {
-    const result = await fetchOfficialTracking(row.tracking_number, env);
+    const result = await fetchOfficialTracking(row.tracking_number, env, fetchImpl);
     await finishMonitorJob(env, job, { row, result });
     message.ack();
   } catch (error) {

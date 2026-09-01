@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import monitorWorker, { allowedApiOrigin, classifyTrackingState, normalizeCarrierPayload, shouldRunMorningMonitor, upsertOrder } from "../src/worker.mjs";
+import monitorWorker, {
+  allowedApiOrigin,
+  classifyTrackingState,
+  enqueueDailyMonitor,
+  normalizeCarrierPayload,
+  processTrackingMessage,
+  shouldRunMorningMonitor,
+  upsertOrder
+} from "../src/worker.mjs";
 
 class D1SqliteAdapter {
   constructor(database) {
@@ -194,6 +202,80 @@ test("pairs one browser, tracks two Amazon accounts, acknowledges pickup, resolv
   assert.equal(revokeResponse.status, 200);
   const revokedResponse = await monitorWorker.fetch(jsonRequest("/api/orders?limit=20", { token: pairing.token }), env);
   assert.equal(revokedResponse.status, 401);
+});
+
+test("runs one idempotent morning queue through Suivi v2 and stores pickup and delivered history", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    TRACKING_QUEUE: {
+      async sendBatch(messages) {
+        queued.push(...messages);
+      }
+    }
+  };
+  await upsertOrder(db, {
+    orderId: "402-2797047-3010738",
+    trackingNumber: "8U02230078613",
+    sellerAccountId: "merchant-one",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "returning"
+  });
+  await upsertOrder(db, {
+    orderId: "408-9133278-8011502",
+    trackingNumber: "CC105961572FR",
+    sellerAccountId: "merchant-two",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "in_transit"
+  });
+
+  const runDate = new Date("2026-09-01T05:05:00.000Z");
+  const run = await enqueueDailyMonitor(env, runDate);
+  assert.equal(run.runDate, "2026-09-01");
+  assert.equal(run.queuedCount, 2);
+  assert.equal(queued.length, 2);
+
+  const fetchImpl = async (url, options) => {
+    assert.match(url, /^https:\/\/api\.laposte\.fr\/suivi\/v2\/idships\//);
+    assert.equal(options.headers["X-Okapi-Key"], "okapi-test-key");
+    const trackingNumber = decodeURIComponent(new URL(url).pathname.split("/").pop());
+    const event = trackingNumber === "8U02230078613"
+      ? { date: "2026-09-01T05:15:00.000Z", label: "Votre envoi retourné est disponible au bureau de poste.", code: "DISPO_RETOUR" }
+      : { date: "2026-09-01T05:16:00.000Z", label: "Votre colis a été livré.", code: "LIVRE" };
+    return Response.json({ returnCode: 200, shipment: { event: [event] } });
+  };
+  for (const queuedMessage of queued) {
+    let acknowledged = false;
+    let retried = false;
+    await processTrackingMessage({
+      body: queuedMessage.body,
+      ack() { acknowledged = true; },
+      retry() { retried = true; }
+    }, env, { fetchImpl });
+    assert.equal(acknowledged, true);
+    assert.equal(retried, false);
+  }
+
+  const states = database.prepare("SELECT tracking_number, tracking_state FROM orders ORDER BY tracking_number").all()
+    .map((row) => ({ ...row }));
+  assert.deepEqual(states, [
+    { tracking_number: "8U02230078613", tracking_state: "pickup_ready" },
+    { tracking_number: "CC105961572FR", tracking_state: "delivered" }
+  ]);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tracking_events").get().count, 2);
+  const completedRun = database.prepare("SELECT processed_count, checked_count, error_count, completed_at FROM monitor_runs").get();
+  assert.equal(completedRun.processed_count, 2);
+  assert.equal(completedRun.checked_count, 2);
+  assert.equal(completedRun.error_count, 0);
+  assert.notEqual(completedRun.completed_at, "");
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM monitor_jobs WHERE status = 'completed'").get().count, 2);
+
+  const repeated = await enqueueDailyMonitor(env, new Date("2026-09-01T05:45:00.000Z"));
+  assert.deepEqual(repeated, { skipped: true, reason: "already-run", runDate: "2026-09-01" });
+  assert.equal(queued.length, 2);
 });
 
 test("does not let an older browser upload hide a newer pickup-required result", async (context) => {
