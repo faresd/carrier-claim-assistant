@@ -8,6 +8,7 @@ const trackingRecords = globalThis.CarrierTrackingRecords;
 const CLAIM_OUTCOMES_KEY = "claimOutcomesByOrder";
 const TRACKED_ORDERS_KEY = "trackedOrdersByOrder";
 const MONITOR_ALERT_ALARM = "carrierReturnMonitorAlerts";
+const MONITOR_ORIGIN = "https://tracking.cheaply.fr";
 
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
@@ -72,7 +73,7 @@ function normalizedMonitorConfig(settings = {}) {
   let serverUrl = "";
   try {
     const url = new URL(String(settings.monitorServerUrl || "").trim());
-    if (url.protocol === "https:") serverUrl = url.origin;
+    if (url.protocol === "https:" && url.origin === MONITOR_ORIGIN) serverUrl = url.origin;
   } catch {}
   return {
     enabled: settings.cloudSyncEnabled === true && Boolean(serverUrl && settings.monitorAccessToken),

@@ -2,11 +2,12 @@
 
 const form = document.getElementById("settings-form");
 const status = document.getElementById("status");
+const MONITOR_ORIGIN = "https://tracking.cheaply.fr";
 
 function monitorOrigin(value) {
   try {
     const url = new URL(String(value || "").trim());
-    return url.protocol === "https:" ? `${url.origin}/*` : "";
+    return url.protocol === "https:" && url.origin === MONITOR_ORIGIN ? `${url.origin}/*` : "";
   } catch {
     return "";
   }
