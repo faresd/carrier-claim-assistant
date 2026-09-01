@@ -191,6 +191,20 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
   await db.prepare("INSERT INTO pairing_codes (code, device_name, created_at, expires_at) VALUES (?, ?, ?, ?)")
     .bind("654321", "Packing desk", new Date().toISOString(), expiresAt).run();
 
+  const originlessPairing = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
+    origin: "",
+    body: { code: "654321", deviceName: "Command-line client" }
+  }), env);
+  assert.equal(originlessPairing.status, 400);
+  assert.match((await originlessPairing.json()).error, /Chrome\/Brave extension/i);
+
+  const websitePairing = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
+    origin: "https://malicious.invalid",
+    body: { code: "654321", deviceName: "Website" }
+  }), env);
+  assert.equal(websitePairing.status, 400);
+  assert.match((await websitePairing.json()).error, /Chrome\/Brave extension/i);
+
   const pairingResponse = await monitorWorker.fetch(jsonRequest("/api/pairing/claim", {
     body: { code: "654321", deviceName: "Work Brave" }
   }), env);

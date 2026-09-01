@@ -651,7 +651,7 @@ async function claimPairingCode(request, env) {
   const code = clean(body.code, 6);
   const now = new Date();
   const origin = request.headers.get("origin") || "";
-  if (origin && !EXTENSION_ORIGIN.test(origin)) throw new Error("Pairing is only available from the Chrome/Brave extension.");
+  if (!EXTENSION_ORIGIN.test(origin)) throw new Error("Pairing is only available from the Chrome/Brave extension.");
   const remoteAddress = request.headers.get("cf-connecting-ip") || "unknown";
   const windowNumber = Math.floor(now.getTime() / (15 * 60000));
   const attemptKey = await sha256(`pairing:${remoteAddress}:${windowNumber}`);
