@@ -74,6 +74,18 @@ jobs:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
           SESSION_SECRET: ${{ secrets.MONITOR_SESSION_SECRET }}
           TRACKING_CLIENT_SECRET: ${{ secrets.MONITOR_TRACKING_CLIENT_SECRET }}
+      - name: Configure optional OpenAI interpretation secret
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        working-directory: monitor-service
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            printf '%s' "$OPENAI_API_KEY" | npx --yes wrangler@latest secret put OPENAI_API_KEY --config wrangler.toml
+          else
+            echo "OPENAI_API_KEY is not configured; keeping the AI interpretation layer disabled."
+          fi
       - name: Verify the live dashboard and authentication boundary
         env:
           MONITOR_BASE_URL: https://tracking.cheaply.fr

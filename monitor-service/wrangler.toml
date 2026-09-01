@@ -2,6 +2,9 @@ name = "carrier-return-monitor"
 main = "src/worker.mjs"
 compatibility_date = "2026-08-31"
 
+[vars]
+OPENAI_MODEL = "gpt-5-mini"
+
 [assets]
 directory = "./admin"
 binding = "ASSETS"

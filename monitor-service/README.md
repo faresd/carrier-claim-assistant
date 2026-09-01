@@ -28,7 +28,7 @@ The scheduled trigger runs every fifteen minutes, but the monitor creates one da
 | `delivered` | Outbound shipment completed | Stop checking |
 | `resolved` | Seller confirmed the returned parcel was physically received | Move to Resolved and stop checking |
 
-Classification is deterministic. AI is deliberately not required for alerts; an optional future fallback may review only statuses left as `unknown`.
+Classification is deterministic. AI is deliberately not required for alerts or claims. If the optional `OPENAI_API_KEY` Worker secret is configured, the queue asks the OpenAI Responses API to explain only messages that remain `unknown`; the result is stored as a clearly labelled human-review note in the carrier summary. The AI suggestion never changes the tracking state, triggers a notification, or submits a claim. Carrier text is sent without recipient/address/order details and is treated as untrusted data.
 
 Only an authenticated dashboard administrator can mark an order resolved or reopen it. Browser uploads may enrich tracking and claim data, but cannot create a resolved state or reinstate one after an administrator reopens the case.
 
@@ -45,6 +45,7 @@ Only an authenticated dashboard administrator can mark an order resolved or reop
    - `LAPOSTE_OKAPI_KEY`
    - `MONITOR_SESSION_SECRET` — a long random secret for the dashboard's secure local session
    - `MONITOR_TRACKING_CLIENT_SECRET` — the `tracking-web` client secret shared only with `auth.cheaply.fr`
+   - `OPENAI_API_KEY` — optional, server-side key used only to explain ambiguous La Poste messages (never sent to the extension or browser)
 6. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list using the checked-in [`sso/tracking-web-client.json`](sso/tracking-web-client.json) contract and [`sso/README.md`](sso/README.md) source patch. Store the same client secret there as `TRACKING_CLIENT_SECRET`.
 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
@@ -54,6 +55,12 @@ The workflow validates every required variable and secret before it applies a mi
 The health response is ready only after the Worker can see every required secret and binding and all eleven D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
 
 Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. Browser uploads use independently revocable per-device bearer tokens; no global master upload token or dashboard bearer token is provisioned by CI.
+
+## Optional ChatGPT interpretation
+
+The monitor can call the OpenAI Responses API from the Worker when a carrier response is still ambiguous. Set the key as a Cloudflare Worker secret (for example, `wrangler secret put OPENAI_API_KEY`) and optionally set `OPENAI_MODEL`; the default is `gpt-5-mini`, a low-latency model with Responses and structured-output support. Keep the key server-side and rotate it through the Cloudflare/GitHub secret store.
+
+The model receives only the latest carrier message and a short carrier-history summary. It returns a strict JSON suggestion (`suggestedState`, confidence, explanation, and `needsHumanReview`). The deterministic classifier remains authoritative: AI output is appended as a review note and cannot mark a parcel delivered, declare a pickup-ready return, recommend a claim, or submit a claim. If the key is missing, the request times out, or the response is invalid, monitoring continues with the original carrier evidence.
 
 ## Pair another Chrome/Brave installation
 
