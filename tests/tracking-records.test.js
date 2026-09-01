@@ -107,3 +107,24 @@ test("keeps the same Amazon order number isolated across seller accounts", () =>
   assert.equal(records.findRecord(collection, { orderId }), null);
   assert.deepEqual(Object.keys(collection).sort(), [first.recordId, second.recordId].sort());
 });
+
+test("reconstructs a sent claim outcome from a synchronized server record", () => {
+  const outcome = records.claimOutcomeForRecord({
+    recordId: "merchant-a|amazon-fr|111-2222222-3333333",
+    accountId: "merchant-a",
+    accountName: "Cheaply France",
+    marketplaceId: "amazon-fr",
+    orderId: "111-2222222-3333333",
+    trackingNumber: "CC000000001FR",
+    carrierId: "laposte",
+    claimStatus: "sent",
+    claimReason: "lost",
+    claimReference: "COL-91855121",
+    claimSubmittedAt: "2026-09-01T08:00:00.000Z"
+  });
+  assert.equal(outcome.recordId, "merchant-a|amazon-fr|111-2222222-3333333");
+  assert.equal(outcome.reference, "COL-91855121");
+  assert.equal(outcome.sellerAccountId, "merchant-a");
+  assert.equal(outcome.noteSaved, false);
+  assert.equal(records.claimOutcomeForRecord({ orderId: "111-2222222-3333333", claimStatus: "none" }), null);
+});

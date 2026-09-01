@@ -129,6 +129,8 @@ test("renders recipient name and postal address beside the title selector", () =
 test("persists successful claims to Seller Notes and a sent button state", () => {
   assert.match(amazonScript, /Claim sent ·/);
   assert.match(amazonScript, /claimOutcomesByOrder/);
+  assert.match(amazonScript, /type:\s*"GET_TRACKED_RECORDS"/);
+  assert.match(amazonScript, /claimOutcomeForRecord/);
   assert.match(amazonScript, /sellerNotesControl/);
   assert.match(amazonScript, /Record existing claim/);
   assert.match(assistantCss, /data-state="sent"/);

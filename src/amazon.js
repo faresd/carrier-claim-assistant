@@ -118,7 +118,23 @@
     if (!order.orderId) return null;
     const stored = await chrome.storage.local.get("claimOutcomesByOrder");
     const outcome = trackingRecords.findRecord(stored.claimOutcomesByOrder || {}, order);
-    return outcome?.trackingNumber === order.trackingNumber ? outcome : null;
+    if (outcome?.trackingNumber === order.trackingNumber) return outcome;
+
+    const remote = await chrome.runtime.sendMessage({
+      type: "GET_TRACKED_RECORDS",
+      refresh: true,
+      orderIds: [order.orderId]
+    }).catch(() => null);
+    const record = remote?.ok ? trackingRecords.findRecord(remote.records || {}, order) : null;
+    const synchronized = trackingRecords.claimOutcomeForRecord(record);
+    if (!synchronized || synchronized.trackingNumber !== order.trackingNumber) return null;
+    synchronized.sellerNote = outcomeRules.buildSellerNote(synchronized);
+    const outcomes = trackingRecords.rekeyRecords(stored.claimOutcomesByOrder || {});
+    const previous = trackingRecords.findRecordEntry(outcomes, synchronized);
+    if (previous?.key && previous.key !== synchronized.recordId) delete outcomes[previous.key];
+    outcomes[synchronized.recordId] = synchronized;
+    await chrome.storage.local.set({ claimOutcomesByOrder: outcomes });
+    return synchronized;
   }
 
   async function recordExistingClaim(reference, reason) {

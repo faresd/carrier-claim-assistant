@@ -125,6 +125,26 @@
     return next;
   }
 
+  function claimOutcomeForRecord(record = {}) {
+    if (record.claimStatus !== "sent" || !identity(record).orderId) return null;
+    const parts = identity(record);
+    return {
+      id: `cloud:${record.recordId || recordKey(record)}:${record.claimSubmittedAt || record.claimReference || "sent"}`,
+      recordId: record.recordId || recordKey(record),
+      carrier: record.carrierId || (/chrono/i.test(record.carrierLabel || "") ? "chronopost" : "laposte"),
+      orderId: parts.orderId,
+      trackingNumber: trackingNumber(record),
+      sellerAccountId: parts.sellerAccountId,
+      sellerAccountName: record.sellerAccountName || record.accountName || parts.sellerAccountId,
+      marketplaceId: parts.marketplaceId,
+      reason: record.claimReason || "other",
+      reference: record.claimReference || "",
+      confirmationText: "Claim synchronized from the private return monitor.",
+      submittedAt: record.claimSubmittedAt || "",
+      noteSaved: false
+    };
+  }
+
   function buildRecord({ order = {}, result = {}, recommendation = {}, outcome = null, previous = null, now = new Date().toISOString() } = {}) {
     const safeOrder = cleanOrder(order);
     const hasFreshStatus = Boolean(result.statusText || result.summaryText || recommendation.statusText);
@@ -179,7 +199,7 @@
 
   const api = {
     normalize, trackingState, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
-    findRecordEntry, findRecord, rekeyRecords, buildRecord, badgeForRecord
+    findRecordEntry, findRecord, rekeyRecords, claimOutcomeForRecord, buildRecord, badgeForRecord
   };
   root.CarrierTrackingRecords = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

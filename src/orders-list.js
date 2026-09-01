@@ -65,16 +65,7 @@
 
   function claimOutcomeForEntry(entry, record = recordForEntry(entry)) {
     const local = localOutcomeForEntry(entry);
-    if (local) return local;
-    if (record?.claimStatus !== "sent") return null;
-    return {
-      orderId: record.orderId,
-      trackingNumber: record.trackingNumber,
-      reference: record.claimReference || "",
-      submittedAt: record.claimSubmittedAt || "",
-      sellerAccountId: record.sellerAccountId || record.accountId,
-      marketplaceId: record.marketplaceId
-    };
+    return local || trackingRecords.claimOutcomeForRecord(record);
   }
 
   function auditEntryFor(entry) {
