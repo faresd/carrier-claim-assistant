@@ -245,6 +245,72 @@ test("a revoked device token disables cloud sync without deleting local history"
   }
 });
 
+test("shows and acknowledges an urgent pickup notification for the paired browser", async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const notificationsBefore = notifications.length;
+  const tabsBefore = createdTabs.length;
+  const recordId = "merchant-alert|A13V1IB3VIYZZH|402-2797047-3010738";
+  const sourceUrl = "https://sellercentral.amazon.fr/orders-v3/order/402-2797047-3010738";
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://tracking.cheaply.fr",
+    monitorAccessToken: "pickup-device-token",
+    pickupNotifications: true
+  };
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith("/api/orders?alerts=1&limit=100")) {
+      return Response.json({
+        orders: [{
+          recordId,
+          orderId: "402-2797047-3010738",
+          trackingNumber: "8U02230078613",
+          trackingState: "pickup_ready",
+          statusText: "Votre envoi retourné est disponible au bureau de poste.",
+          accountId: "merchant-alert",
+          accountName: "Cheaply Returns",
+          marketplaceId: "A13V1IB3VIYZZH",
+          amazonUrl: sourceUrl
+        }]
+      });
+    }
+    return Response.json({ ok: true });
+  };
+
+  try {
+    const response = await send({ type: "REFRESH_MONITOR_ALERTS" });
+    assert.deepEqual(response, { ok: true, count: 1 });
+    const notification = notifications.at(-1);
+    assert.equal(notifications.length, notificationsBefore + 1);
+    assert.equal(notification.id, `return-pickup:${encodeURIComponent(recordId)}`);
+    assert.equal(notification.options.title, "Returned package ready for pickup");
+    assert.match(notification.options.message, /402-2797047-3010738.*8U02230078613/);
+    assert.equal(notification.options.contextMessage, "Cheaply Returns");
+    assert.equal(notification.options.requireInteraction, true);
+
+    const acknowledgement = requests.find((request) => request.url.endsWith(`/api/orders/${encodeURIComponent(recordId)}/ack-pickup`));
+    assert.ok(acknowledgement);
+    assert.equal(acknowledgement.options.method, "POST");
+    assert.equal(acknowledgement.options.headers.authorization, "Bearer pickup-device-token");
+    assert.equal(trackingRecords.findRecord(local.trackedOrdersByOrder, {
+      orderId: "402-2797047-3010738",
+      sellerAccountId: "merchant-alert",
+      marketplaceId: "A13V1IB3VIYZZH"
+    }).trackingState, "pickup_ready");
+
+    listeners.notificationClicked(notification.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(createdTabs.length, tabsBefore + 1);
+    assert.equal(createdTabs.at(-1).url, sourceUrl);
+    assert.equal(createdTabs.at(-1).active, true);
+  } finally {
+    global.fetch = originalFetch;
+    local.claimSettings = { ...local.claimSettings, cloudSyncEnabled: false, monitorAccessToken: "" };
+  }
+});
+
 test("starts a private La Poste tracking check and arms cleanup", async () => {
   const response = await send({
     type: "CHECK_CARRIER_STATUS",
