@@ -99,6 +99,7 @@
       pickup_ready: { state: "pickup", label: "Pickup required", actionable: true },
       returning: { state: "returned", label: "Returning to sender", actionable: true },
       lost: { state: "recommended", label: "Lost · investigate", actionable: true },
+      delivered: { state: "delivered", label: "Delivered", actionable: false },
       resolved: { state: "resolved", label: "Returned · received", actionable: true }
     };
     return states[record?.trackingState] || null;
