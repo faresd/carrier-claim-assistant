@@ -35,20 +35,19 @@ Classification is deterministic. AI is deliberately not required for alerts; an 
 1. Create a Cloudflare D1 database named `carrier-return-monitor`.
 2. Create a Cloudflare Queue named `carrier-tracking-checks`.
 3. Create a free Okapi application, subscribe to La Poste **Suivi v2**, and obtain its `X-Okapi-Key`.
-4. Add the following GitHub Actions secrets:
-   - `CF_API_TOKEN`
+4. Add the non-sensitive GitHub Actions repository variables:
    - `CF_ACCOUNT_ID`
    - `CF_D1_DATABASE_ID`
+5. Add the following encrypted GitHub Actions secrets:
+   - `CF_API_TOKEN` — scoped to this Worker's deployment resources
    - `LAPOSTE_OKAPI_KEY`
    - `MONITOR_SESSION_SECRET` — a long random secret for the dashboard's secure local session
    - `MONITOR_TRACKING_CLIENT_SECRET` — the `tracking-web` client secret shared only with `auth.cheaply.fr`
-   - `MONITOR_ADMIN_TOKEN` — an emergency API recovery token; it is not entered in the dashboard
-   - `MONITOR_SYNC_TOKEN` — optional emergency/master extension token
-5. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list with the exact callback `https://tracking.cheaply.fr/api/auth/callback`, and store the same client secret there as `TRACKING_CLIENT_SECRET`.
-6. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
-7. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
+6. Register `tracking-web` in the existing `cheaply-sso` Worker's client allow-list with the exact callback `https://tracking.cheaply.fr/api/auth/callback`, and store the same client secret there as `TRACKING_CLIENT_SECRET`.
+7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
+8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
-Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. API recovery remains protected by the emergency admin token, while browser uploads use independently revocable per-device bearer tokens.
+Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. Browser uploads use independently revocable per-device bearer tokens; no global master upload token or dashboard bearer token is provisioned by CI.
 
 ## Pair another Chrome/Brave installation
 

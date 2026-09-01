@@ -25,30 +25,26 @@ jobs:
         run: npm --prefix monitor-service test
       - name: Configure D1 database binding
         env:
-          D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          D1_DATABASE_ID: ${{ vars.CF_D1_DATABASE_ID }}
         run: sed -i "s/REPLACE_WITH_D1_DATABASE_ID/$D1_DATABASE_ID/" monitor-service/wrangler.toml
       - name: Apply database migrations
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          accountId: ${{ vars.CF_ACCOUNT_ID }}
           workingDirectory: monitor-service
           command: d1 migrations apply carrier-return-monitor --remote
       - name: Deploy Worker, dashboard, queue consumer, and scheduler
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          accountId: ${{ vars.CF_ACCOUNT_ID }}
           workingDirectory: monitor-service
           secrets: |
             LAPOSTE_OKAPI_KEY
-            ADMIN_TOKEN
-            SYNC_TOKEN
             SESSION_SECRET
             TRACKING_CLIENT_SECRET
         env:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
-          ADMIN_TOKEN: ${{ secrets.MONITOR_ADMIN_TOKEN }}
-          SYNC_TOKEN: ${{ secrets.MONITOR_SYNC_TOKEN }}
           SESSION_SECRET: ${{ secrets.MONITOR_SESSION_SECRET }}
           TRACKING_CLIENT_SECRET: ${{ secrets.MONITOR_TRACKING_CLIENT_SECRET }}
