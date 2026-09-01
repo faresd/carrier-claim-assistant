@@ -44,7 +44,11 @@ jobs:
             LAPOSTE_OKAPI_KEY
             ADMIN_TOKEN
             SYNC_TOKEN
+            SESSION_SECRET
+            TRACKING_CLIENT_SECRET
         env:
           LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
           ADMIN_TOKEN: ${{ secrets.MONITOR_ADMIN_TOKEN }}
           SYNC_TOKEN: ${{ secrets.MONITOR_SYNC_TOKEN }}
+          SESSION_SECRET: ${{ secrets.MONITOR_SESSION_SECRET }}
+          TRACKING_CLIENT_SECRET: ${{ secrets.MONITOR_TRACKING_CLIENT_SECRET }}
