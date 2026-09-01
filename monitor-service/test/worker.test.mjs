@@ -51,6 +51,13 @@ test("classifies a returned parcel waiting for sender pickup as urgent", () => {
   ), "pickup_ready");
 });
 
+test("does not treat a future return warning as sender pickup", () => {
+  assert.equal(classifyTrackingState(
+    "Votre colis est disponible au bureau de poste pour le destinataire.",
+    "À défaut de retrait avant le 8 septembre, il sera retourné à l'expéditeur."
+  ), "unknown");
+});
+
 test("keeps return-in-transit and lost parcels in separate queues", () => {
   assert.equal(classifyTrackingState("Votre colis est en retour à l'expéditeur."), "returning");
   assert.equal(classifyTrackingState("Votre colis ne peut plus être localisé."), "lost");

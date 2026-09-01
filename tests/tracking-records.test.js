@@ -12,6 +12,10 @@ test("detects urgent sender pickup only in a return context", () => {
   assert.equal(records.trackingState({
     statusText: "Votre colis est disponible au point relais pour le destinataire"
   }), "unknown");
+  assert.equal(records.trackingState({
+    statusText: "Votre colis est disponible au bureau de poste pour le destinataire",
+    summaryText: "À défaut de retrait, il sera retourné à l'expéditeur"
+  }), "unknown");
 });
 
 test("lets the current delivered or lost event override older return history", () => {
