@@ -374,13 +374,21 @@ async function refreshMonitorAlerts() {
 async function pairMonitorDevice({ serverUrl, code, deviceName }) {
   const config = normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: serverUrl, monitorAccessToken: "temporary" });
   if (!config.serverUrl || !/^\d{6}$/.test(String(code || "").trim())) throw new Error("Enter the server URL and six-digit pairing code.");
-  const response = await fetch(`${config.serverUrl}/api/pairing/claim`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code: String(code).trim(), deviceName: String(deviceName || navigator.userAgent || "Chrome/Brave browser").slice(0, 100) })
-  });
+  let response;
+  try {
+    response = await fetch(`${config.serverUrl}/api/pairing/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: String(code).trim(), deviceName: String(deviceName || navigator.userAgent || "Chrome/Brave browser").slice(0, 100) })
+    });
+  } catch (error) {
+    throw new Error(`Cannot reach the return monitor. Check the server URL and browser permission (${error.message}).`);
+  }
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.token) throw new Error(payload.error || "Browser pairing failed.");
+  if (!response.ok || !payload.token) {
+    const detail = payload.error || `Pairing endpoint returned HTTP ${response.status}.`;
+    throw new Error(detail);
+  }
   const stored = await chrome.storage.local.get("claimSettings");
   const claimSettings = {
     ...DEFAULT_CLAIM_SETTINGS,
