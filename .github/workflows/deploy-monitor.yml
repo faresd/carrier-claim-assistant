@@ -1,0 +1,50 @@
+name: Deploy return monitor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "monitor-service/**"
+      - ".github/workflows/deploy-monitor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Test monitor classification
+        run: npm --prefix monitor-service test
+      - name: Configure D1 database binding
+        env:
+          D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+        run: sed -i "s/REPLACE_WITH_D1_DATABASE_ID/$D1_DATABASE_ID/" monitor-service/wrangler.toml
+      - name: Apply database migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          workingDirectory: monitor-service
+          command: d1 migrations apply carrier-return-monitor --remote
+      - name: Deploy Worker, dashboard, queue consumer, and scheduler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          workingDirectory: monitor-service
+          secrets: |
+            LAPOSTE_OKAPI_KEY
+            ADMIN_TOKEN
+            SYNC_TOKEN
+        env:
+          LAPOSTE_OKAPI_KEY: ${{ secrets.LAPOSTE_OKAPI_KEY }}
+          ADMIN_TOKEN: ${{ secrets.MONITOR_ADMIN_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.MONITOR_SYNC_TOKEN }}
