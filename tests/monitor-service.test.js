@@ -18,6 +18,7 @@ const dashboardScript = read("monitor-service", "admin", "app.js");
 const dashboardStyles = read("monitor-service", "admin", "styles.css");
 const deployment = read(".github", "workflows", "deploy-monitor.yml");
 const deploymentValidator = read("monitor-service", "scripts", "validate-deployment-env.mjs");
+const ssoPreflight = read("monitor-service", "scripts", "verify-sso-registration.mjs");
 const productionSmoke = read("monitor-service", "scripts", "smoke-production.mjs");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
@@ -134,14 +135,21 @@ test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", 
 
 test("monitor deployment fails before mutation when required production configuration is missing", () => {
   const validationIndex = deployment.indexOf("Validate deployment configuration");
+  const ssoIndex = deployment.indexOf("Verify shared SSO client registration");
   const migrationIndex = deployment.indexOf("Apply database migrations");
-  assert.ok(validationIndex > 0 && validationIndex < migrationIndex);
+  assert.ok(validationIndex > 0 && validationIndex < ssoIndex && ssoIndex < migrationIndex);
   for (const name of ["CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN", "LAPOSTE_OKAPI_KEY", "MONITOR_SESSION_SECRET", "MONITOR_TRACKING_CLIENT_SECRET"]) {
     assert.match(deployment, new RegExp(name));
     assert.match(deploymentValidator, new RegExp(name));
   }
   assert.match(deploymentValidator, /Use different values/);
   assert.doesNotMatch(deploymentValidator, /console\.(?:log|error)\([^\n]*(?:apiToken|okapiKey|sessionSecret|trackingSecret)/);
+  assert.match(deployment, /node monitor-service\/scripts\/verify-sso-registration\.mjs/);
+  assert.match(ssoPreflight, /client_id/);
+  assert.match(ssoPreflight, /tracking-web/);
+  assert.match(ssoPreflight, /code_challenge_method/);
+  assert.match(ssoPreflight, /S256/);
+  assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
 });
 
 test("monitor deployment verifies the live security and authentication boundary", () => {

@@ -36,6 +36,8 @@ jobs:
           MONITOR_SESSION_SECRET: ${{ secrets.MONITOR_SESSION_SECRET }}
           MONITOR_TRACKING_CLIENT_SECRET: ${{ secrets.MONITOR_TRACKING_CLIENT_SECRET }}
         run: node monitor-service/scripts/validate-deployment-env.mjs
+      - name: Verify shared SSO client registration
+        run: node monitor-service/scripts/verify-sso-registration.mjs
       - name: Configure D1 database binding
         env:
           D1_DATABASE_ID: ${{ vars.CF_D1_DATABASE_ID }}
