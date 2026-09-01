@@ -729,3 +729,31 @@ test("stores only a matching Amazon Seller Central order URL", async (context) =
   });
   assert.equal(database.prepare("SELECT amazon_url FROM orders").get().amazon_url, stored);
 });
+
+test("browser uploads cannot resolve or re-resolve an administrator-reopened order", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const order = {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY000000003FR",
+    sellerAccountId: "merchant-resolution",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "pickup_ready",
+    checkedAt: "2026-09-01T07:00:00.000Z"
+  };
+  await upsertOrder(db, order);
+
+  await upsertOrder(db, {
+    ...order,
+    trackingState: "resolved",
+    resolvedAt: "2026-09-02T08:00:00.000Z",
+    resolutionNote: "Stale browser resolution",
+    checkedAt: "2026-09-02T08:00:00.000Z"
+  });
+
+  const row = await db.prepare("SELECT tracking_state, resolved_at, resolution_note FROM orders WHERE order_id = ?")
+    .bind(order.orderId).first();
+  assert.equal(row.tracking_state, "pickup_ready");
+  assert.equal(row.resolved_at, "");
+  assert.equal(row.resolution_note, "");
+});
