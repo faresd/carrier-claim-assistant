@@ -18,7 +18,7 @@ Supported workflows include Colissimo and La Poste claim forms plus the authenti
 
 Manage Orders pages can scan shipped orders sequentially through one reusable inactive tab. Results include the last-check time. Delivered results are cached until the operator explicitly rechecks them.
 
-The extension has no analytics, advertising, or third-party libraries. Private cloud return monitoring is optional and connects only to the operator-configured HTTPS server after an explicit browser permission prompt. Final claim submission always requires explicit confirmation.
+The extension has no analytics, advertising, or third-party libraries. Private cloud return monitoring is optional and connects only to `https://tracking.cheaply.fr` after an explicit browser permission prompt. Final claim submission always requires explicit confirmation.
 
 ## Category
 
@@ -37,7 +37,7 @@ Help Amazon Seller Central operators identify shipment problems and prepare a ca
 - `storage`: saves sender settings, delivery-check cache, confirmed claim outcomes, return-state cache, and the optional per-device monitor token in extension storage.
 - `alarms`: safely expires status checks/audit loads and polls the configured monitor for urgent pickup alerts.
 - `notifications`: alerts the operator when a returned parcel is waiting for sender pickup.
-- Optional HTTPS host access: granted only for the exact private monitor origin configured by the operator; synchronizes order/return state and retrieves pickup alerts.
+- Optional `https://tracking.cheaply.fr` access: synchronizes private order/return state and retrieves pickup alerts after an explicit browser permission prompt.
 - Amazon Seller Central host access: reads visible order/shipment data and appends a confirmed claim result to Seller Notes.
 - La Poste and Chronopost host access: reads official tracking status and prefills the corresponding user-requested claim workflow.
 
