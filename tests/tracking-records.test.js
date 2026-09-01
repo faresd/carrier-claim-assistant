@@ -33,6 +33,11 @@ test("creates a multi-account record key and return badge", () => {
 test("resolved and delivered records are excluded from monitoring", () => {
   assert.equal(records.monitorEligible({ orderId: "1", trackingNumber: "X", trackingState: "resolved" }), false);
   assert.equal(records.monitorEligible({ orderId: "1", trackingNumber: "X", trackingState: "delivered" }), false);
+  assert.deepEqual(records.badgeForRecord({ trackingState: "delivered" }), {
+    state: "delivered",
+    label: "Delivered",
+    actionable: false
+  });
 });
 
 test("an Amazon page reload does not erase a server-return or pickup state", () => {
