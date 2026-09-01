@@ -132,6 +132,8 @@ test("persists successful claims to Seller Notes and a sent button state", () =>
   assert.match(amazonScript, /type:\s*"GET_TRACKED_RECORDS"/);
   assert.match(amazonScript, /claimOutcomeForRecord/);
   assert.match(amazonScript, /sellerNotesControl/);
+  assert.match(amazonScript, /sellerNotesSaveButton/);
+  assert.match(amazonScript, /if \(saveButton\) saveButton\.click\(\)/);
   assert.match(amazonScript, /Record existing claim/);
   assert.match(assistantCss, /data-state="sent"/);
 });

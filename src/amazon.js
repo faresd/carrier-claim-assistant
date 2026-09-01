@@ -51,6 +51,44 @@
     }) || null;
   }
 
+  function isVisibleControl(node) {
+    if (!node || node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(node);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  }
+
+  function sellerNotesSaveButton(control) {
+    const selectors = 'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"]';
+    const regions = [];
+    let region = control.closest("form,section,article");
+    if (region) regions.push(region);
+    region = control.parentElement;
+    for (let depth = 0; region && depth < 5; depth += 1, region = region.parentElement) {
+      const description = rules.normalize(region.innerText?.slice(0, 500) || "");
+      if (/seller notes|notes vendeur|records only|pour vos archives|ne sera pas affiche/.test(description)) {
+        regions.push(region);
+      }
+    }
+
+    const seen = new Set();
+    for (const candidateRegion of regions) {
+      for (const candidate of candidateRegion.querySelectorAll(selectors)) {
+        if (seen.has(candidate)) continue;
+        seen.add(candidate);
+        const label = rules.normalize([
+          candidate.innerText,
+          candidate.value,
+          candidate.getAttribute("aria-label"),
+          candidate.getAttribute("title")
+        ].filter(Boolean).join(" "));
+        if (!/^(save|save notes?|enregistrer|enregistrer les notes?|sauvegarder|mettre a jour|update)(\b|$)/.test(label)) continue;
+        if (candidate.disabled || candidate.getAttribute("aria-disabled") === "true" || !isVisibleControl(candidate)) continue;
+        return candidate;
+      }
+    }
+    return null;
+  }
+
   function controlText(control) {
     return "value" in control ? String(control.value || "") : String(control.textContent || "");
   }
@@ -93,8 +131,12 @@
     const maximumLength = Number(control.maxLength) > 0 ? Number(control.maxLength) : 4000;
     const next = outcomeRules.appendSellerNote(existing, outcome.sellerNote, maximumLength);
     if (next !== existing) setControlText(control, next);
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    const saved = controlText(control) === next && next.includes(outcome.sellerNote);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const saveButton = next !== existing ? sellerNotesSaveButton(control) : null;
+    if (saveButton) saveButton.click();
+    await new Promise((resolve) => setTimeout(resolve, saveButton ? 900 : 650));
+    const currentControl = sellerNotesControl() || control;
+    const saved = controlText(currentControl) === next && next.includes(outcome.sellerNote);
     if (saved) await markSellerNoteSaved(outcome);
     return saved;
   }
