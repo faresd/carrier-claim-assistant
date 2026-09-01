@@ -135,8 +135,13 @@ test("monitor deployment verifies the live security and authentication boundary"
   assert.ok(deployIndex > 0 && smokeIndex > deployIndex);
   assert.match(deployment, /node monitor-service\/scripts\/smoke-production\.mjs/);
   assert.match(productionSmoke, /\/api\/health/);
+  assert.match(productionSmoke, /healthPayload\.ready !== true/);
+  assert.match(worker, /sqlite_master/);
+  assert.match(worker, /REQUIRED_SCHEMA_TABLES/);
   assert.match(productionSmoke, /\/api\/orders/);
   assert.match(productionSmoke, /content-security-policy/);
   assert.match(productionSmoke, /https:\/\/auth\.cheaply\.fr/);
   assert.match(productionSmoke, /code_challenge_method/);
+  assert.match(deployment, /group: carrier-return-monitor-production/);
+  assert.match(deployment, /cancel-in-progress: false/);
 });

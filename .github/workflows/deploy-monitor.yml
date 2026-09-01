@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: carrier-return-monitor-production
+  cancel-in-progress: false
+
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest

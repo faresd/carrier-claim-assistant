@@ -4,7 +4,7 @@ import { verifyProductionMonitor } from "../scripts/smoke-production.mjs";
 
 function successfulResponse(url) {
   const path = new URL(url).pathname;
-  if (path === "/api/health") return Response.json({ ok: true, service: "carrier-return-monitor" });
+  if (path === "/api/health") return Response.json({ ok: true, service: "carrier-return-monitor", ready: true });
   if (path === "/") {
     return new Response("dashboard", {
       status: 200,

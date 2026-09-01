@@ -7,6 +7,10 @@ const CLAIM_REASONS = new Set(["lost", "returned", "delayed", "damaged", "delive
 const CLAIM_STATUSES = new Set(["none", "requested", "sent"]);
 const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
+const REQUIRED_SCHEMA_TABLES = [
+  "orders", "seller_accounts", "tracking_events", "monitor_runs", "monitor_jobs",
+  "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts"
+];
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
   chronopost: "https://www.chronopost.fr/service-client-en-ligne/home/iv4.html?lang=fr_FR"
@@ -106,6 +110,28 @@ function safeAmazonOrderUrl(value, orderId) {
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
+}
+
+export async function monitorHealth(env = {}, request = new Request(`${DASHBOARD_ORIGIN}/api/health`)) {
+  const bindingsReady = typeof env.DB?.prepare === "function" &&
+    typeof env.TRACKING_QUEUE?.send === "function" &&
+    typeof env.ASSETS?.fetch === "function" &&
+    Boolean(clean(env.LAPOSTE_OKAPI_KEY, 500)) &&
+    Boolean(clean(env.SESSION_SECRET, 500)) &&
+    Boolean(clean(env.TRACKING_CLIENT_SECRET, 500));
+  if (!bindingsReady) {
+    return json({ ok: false, service: "carrier-return-monitor", ready: false }, 503, corsHeaders(request));
+  }
+  try {
+    const names = REQUIRED_SCHEMA_TABLES.map((name) => `'${name}'`).join(",");
+    const result = await env.DB.prepare(`SELECT COUNT(*) AS table_count FROM sqlite_master WHERE type = 'table' AND name IN (${names})`).first();
+    if (Number(result?.table_count || 0) !== REQUIRED_SCHEMA_TABLES.length) {
+      return json({ ok: false, service: "carrier-return-monitor", ready: false }, 503, corsHeaders(request));
+    }
+  } catch {
+    return json({ ok: false, service: "carrier-return-monitor", ready: false }, 503, corsHeaders(request));
+  }
+  return json({ ok: true, service: "carrier-return-monitor", ready: true }, 200, corsHeaders(request));
 }
 
 function secureAssetHeaders(headers) {
@@ -743,7 +769,7 @@ export default {
       }
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
-    if (url.pathname === "/api/health") return json({ ok: true, service: "carrier-return-monitor" }, 200, corsHeaders(request));
+    if (url.pathname === "/api/health") return monitorHealth(env, request);
     const authResponse = await handleDashboardAuth(request, env, url);
     if (authResponse) return authResponse;
     if (url.pathname.startsWith("/api/")) return api(request, env, url);

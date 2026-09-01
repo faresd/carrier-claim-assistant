@@ -6,6 +6,7 @@ import monitorWorker, {
   allowedApiOrigin,
   classifyTrackingState,
   enqueueDailyMonitor,
+  monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
   shouldRunMorningMonitor,
@@ -129,6 +130,36 @@ test("allows API CORS only for the production dashboard and real extension origi
   const untrustedResponse = await monitorWorker.fetch(untrusted, {});
   assert.equal(untrustedResponse.status, 403);
   assert.equal(untrustedResponse.headers.get("access-control-allow-origin"), null);
+});
+
+test("health fails closed until every production binding and schema table is ready", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const request = new Request("https://tracking.cheaply.fr/api/health", {
+    headers: { origin: "https://tracking.cheaply.fr" }
+  });
+  const env = {
+    DB: db,
+    TRACKING_QUEUE: { async send() {} },
+    ASSETS: { async fetch() { return new Response(""); } },
+    LAPOSTE_OKAPI_KEY: "test-okapi-key",
+    SESSION_SECRET: "test-session-secret-with-at-least-thirty-two-characters",
+    TRACKING_CLIENT_SECRET: "test-client-secret-with-at-least-thirty-two-characters"
+  };
+
+  const ready = await monitorHealth(env, request);
+  assert.equal(ready.status, 200);
+  assert.deepEqual(await ready.json(), { ok: true, service: "carrier-return-monitor", ready: true });
+  assert.equal(ready.headers.get("access-control-allow-origin"), "https://tracking.cheaply.fr");
+
+  const missingQueue = await monitorHealth({ ...env, TRACKING_QUEUE: undefined }, request);
+  assert.equal(missingQueue.status, 503);
+  assert.deepEqual(await missingQueue.json(), { ok: false, service: "carrier-return-monitor", ready: false });
+
+  database.exec("DROP TABLE notification_receipts");
+  const incompleteSchema = await monitorHealth(env, request);
+  assert.equal(incompleteSchema.status, 503);
+  assert.deepEqual(await incompleteSchema.json(), { ok: false, service: "carrier-return-monitor", ready: false });
 });
 
 test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup alerts, resolves, and revokes access", async (context) => {
