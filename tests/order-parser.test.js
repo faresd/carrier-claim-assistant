@@ -47,6 +47,9 @@ test("extracts the claim fields from an Amazon Seller order", () => {
       shippingService: "COLISSIMO Livraison a domicile sans signature",
       itemValue: "€204.00",
       quantity: "1",
+      sellerAccountId: "sellercentral.amazon.fr",
+      sellerAccountName: "Seller Central account",
+      marketplaceId: "A13V1IB3VIYZZH",
       recipientName: "Arne Beispiel",
       recipientAddress1: "Musterstraße 10",
       recipientAddress2: "",
@@ -66,8 +69,30 @@ test("extracts the claim fields from an Amazon Seller order", () => {
   ]);
 });
 
+test("keeps Amazon merchant and marketplace context for multi-account history", () => {
+  const order = parseOrderDetails(
+    AMAZON_ORDER_TEXT,
+    "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333?mons_sel_mcid=amzn1.merchant.o.ACCOUNT123&mons_sel_mkid=amzn1.mp.o.A13V1IB3VIYZZH"
+  );
+  assert.equal(order.sellerAccountId, "amzn1.merchant.o.ACCOUNT123");
+  assert.equal(order.marketplaceId, "amzn1.mp.o.A13V1IB3VIYZZH");
+});
+
 test("fails closed when no tracking number is present", () => {
   assert.equal(parseOrderDetails("Order ID: # 123-1234567-1234567").trackingNumber, "");
+});
+
+test("extracts a tracking number from Amazon's edit-consignment label with a colon", () => {
+  const order = parseOrderDetails(`
+Order details Order ID: # 402-2797047-3010738
+Carrier:
+Chronopost
+Delivery Service:
+Chrono Classic
+Tracking ID:
+8U02230078613
+  `);
+  assert.equal(order.trackingNumber, "8U02230078613");
 });
 
 test("extracts Colissimo international orders with the COLISSIMOS alias", () => {
