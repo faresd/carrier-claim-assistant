@@ -116,7 +116,7 @@ export async function monitorHealth(env = {}, request = new Request(`${DASHBOARD
   const bindingsReady = typeof env.DB?.prepare === "function" &&
     typeof env.TRACKING_QUEUE?.send === "function" &&
     typeof env.ASSETS?.fetch === "function" &&
-    Boolean(clean(env.LAPOSTE_OKAPI_KEY, 500)) &&
+    Boolean(clean(env.LAPOSTE_OKAPI_KEY || env.LAPOSTE_LEGACY_OKAPI_KEY, 500)) &&
     Boolean(clean(env.SESSION_SECRET, 500)) &&
     Boolean(clean(env.TRACKING_CLIENT_SECRET, 500));
   if (!bindingsReady) {
@@ -471,28 +471,75 @@ export function normalizeCarrierPayload(payload) {
   };
 }
 
-export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch, timeoutMs = 15000) {
-  if (!env.LAPOSTE_OKAPI_KEY) throw new Error("LAPOSTE_OKAPI_KEY is not configured.");
-  const endpoint = `https://api.laposte.fr/suivi/v2/idships/${encodeURIComponent(trackingNumber)}?lang=fr_FR`;
-  const controller = new AbortController();
+const LAPOSTE_V2_ENDPOINT = (trackingNumber) =>
+  `https://api.laposte.fr/suivi/v2/idships/${encodeURIComponent(trackingNumber)}?lang=fr_FR`;
+// La Poste's original Suivi API is still exposed at /suivi/v1/{trackingNumber}.
+// Keep this fallback server-side so the extension never receives an Okapi key.
+const LAPOSTE_V1_ENDPOINT = (trackingNumber) =>
+  `https://api.laposte.fr/suivi/v1/${encodeURIComponent(trackingNumber)}`;
+
+function carrierPayloadError(payload) {
+  if (payload?.returnCode && Number(payload.returnCode) !== 200) {
+    return clean(payload.returnMessage || `Carrier error ${payload.returnCode}`, 300);
+  }
+  if (payload?.code && /^(AUTHORIZATION|UNAUTHORIZED|FORBIDDEN|ERROR|KO|NOT_FOUND)$/i.test(String(payload.code))) {
+    return clean(payload.message || payload.error || `Carrier error ${payload.code}`, 300);
+  }
+  return "";
+}
+
+async function fetchLaposteEndpoint(endpoint, apiKey, fetchImpl, timeoutMs, label) {
   const requestTimeout = Math.max(1000, Number(timeoutMs) || 15000);
+  const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), requestTimeout);
   let response;
   try {
     response = await fetchImpl(endpoint, {
-      headers: { accept: "application/json", "X-Okapi-Key": env.LAPOSTE_OKAPI_KEY },
+      headers: { accept: "application/json", "X-Okapi-Key": apiKey },
       signal: controller.signal
     });
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`La Poste Suivi request timed out after ${Math.round(requestTimeout / 1000)} seconds.`);
-    throw error;
+    if (error?.name === "AbortError") {
+      throw new Error(`La Poste ${label} request timed out after ${Math.round(requestTimeout / 1000)} seconds.`);
+    }
+    throw new Error(`La Poste ${label} request failed: ${clean(error?.message || error, 250)}`);
   } finally {
     clearTimeout(timer);
   }
-  if (!response.ok) throw new Error(`La Poste Suivi returned HTTP ${response.status}.`);
+  if (!response.ok) throw new Error(`La Poste ${label} returned HTTP ${response.status}.`);
   const payload = await response.json();
-  if (payload?.returnCode && Number(payload.returnCode) !== 200) throw new Error(clean(payload.returnMessage || `Carrier error ${payload.returnCode}`, 300));
+  const carrierError = carrierPayloadError(payload);
+  if (carrierError) throw new Error(carrierError);
   return normalizeCarrierPayload(payload);
+}
+
+export async function fetchOfficialTracking(trackingNumber, env, fetchImpl = fetch, timeoutMs = 15000) {
+  const v2Key = String(env.LAPOSTE_OKAPI_KEY || "").trim();
+  const legacyKey = String(env.LAPOSTE_LEGACY_OKAPI_KEY || v2Key).trim();
+  const legacyEnabled = env.LAPOSTE_LEGACY_ENABLED !== "false";
+  if (!v2Key && (!legacyEnabled || !legacyKey)) {
+    throw new Error("No La Poste tracking API key is configured.");
+  }
+
+  let v2Error = null;
+  if (v2Key) {
+    try {
+      return { ...(await fetchLaposteEndpoint(LAPOSTE_V2_ENDPOINT(trackingNumber), v2Key, fetchImpl, timeoutMs, "Suivi v2")), source: "laposte-suivi-v2" };
+    } catch (error) {
+      v2Error = error;
+    }
+  }
+
+  if (legacyEnabled && legacyKey) {
+    try {
+      return { ...(await fetchLaposteEndpoint(LAPOSTE_V1_ENDPOINT(trackingNumber), legacyKey, fetchImpl, timeoutMs, "Suivi v1")), source: "laposte-suivi-v1" };
+    } catch (legacyError) {
+      if (!v2Error) throw legacyError;
+      throw new Error(`La Poste tracking unavailable: Suivi v2 (${clean(v2Error.message, 220)}); legacy Suivi v1 (${clean(legacyError.message, 220)}).`);
+    }
+  }
+
+  throw v2Error || new Error("La Poste legacy tracking fallback is disabled.");
 }
 
 function parisDateParts(date = new Date()) {
