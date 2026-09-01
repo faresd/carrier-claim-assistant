@@ -42,6 +42,7 @@ class D1SqliteAdapter {
 async function monitorDatabase() {
   const database = new DatabaseSync(":memory:");
   database.exec(await readFile(new URL("../migrations/0001_initial.sql", import.meta.url), "utf8"));
+  database.exec(await readFile(new URL("../migrations/0002_resolved_deletion_indexes.sql", import.meta.url), "utf8"));
   return { database, db: new D1SqliteAdapter(database) };
 }
 
@@ -365,6 +366,51 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
     origin: "https://tracking.cheaply.fr"
   }), env);
   assert.equal((await resolvedList.json()).orders.length, 1);
+
+  const exportResponse = await monitorWorker.fetch(jsonRequest("/api/export?resource=orders&limit=500&offset=0", {
+    cookie: adminCookie,
+    origin: "https://tracking.cheaply.fr"
+  }), env);
+  assert.equal(exportResponse.status, 200);
+  const exported = await exportResponse.json();
+  assert.equal(exported.resource, "orders");
+  assert.equal(exported.rows.length, 2);
+  const exportedPickup = exported.rows.find((order) => order.recordId === pickup.recordId);
+  assert.equal(exportedPickup.claimPayload.sender.email, "claims@example.com");
+  assert.equal(exportedPickup.claimPayload.order.sku, "DEMO-1");
+  assert.equal("devices" in exported, false);
+
+  const deviceExport = await monitorWorker.fetch(jsonRequest("/api/export?resource=devices", {
+    cookie: adminCookie,
+    origin: "https://tracking.cheaply.fr"
+  }), env);
+  assert.equal(deviceExport.status, 400);
+
+  const activeRecordId = `${secondOrder.sellerAccountId}|${secondOrder.marketplaceId}|${secondOrder.orderId}`;
+  const activeDeletion = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(activeRecordId)}/delete`, {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: {}
+  }), env);
+  assert.equal(activeDeletion.status, 400);
+  assert.match((await activeDeletion.json()).error, /only a resolved order/i);
+
+  const extensionDeletion = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/delete`, {
+    token: secondPairing.token,
+    body: {}
+  }), env);
+  assert.equal(extensionDeletion.status, 403);
+
+  const deletion = await monitorWorker.fetch(jsonRequest(`/api/orders/${encodeURIComponent(pickup.recordId)}/delete`, {
+    cookie: adminCookie,
+    csrf: adminCsrf,
+    origin: "https://tracking.cheaply.fr",
+    body: {}
+  }), env);
+  assert.equal(deletion.status, 200);
+  assert.equal((await deletion.json()).recordId, pickup.recordId);
+  assert.equal(await db.prepare("SELECT record_id FROM orders WHERE record_id = ?").bind(pickup.recordId).first(), null);
 
   const revokeResponse = await monitorWorker.fetch(jsonRequest(`/api/devices/${encodeURIComponent(pairing.deviceId)}/revoke`, {
     cookie: adminCookie,
