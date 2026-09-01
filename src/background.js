@@ -50,9 +50,24 @@ const ORDER_AUDIT_LOAD_TIMEOUT_MS = 30000;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   const stored = await chrome.storage.local.get(["senderProfile", "claimSettings"]);
+  const previousSettings = stored.claimSettings || {};
+  let monitorOriginChanged = false;
+  if (previousSettings.monitorServerUrl) {
+    try {
+      monitorOriginChanged = new URL(previousSettings.monitorServerUrl).origin !== MONITOR_ORIGIN;
+    } catch {
+      monitorOriginChanged = true;
+    }
+  }
   await chrome.storage.local.set({
     senderProfile: { ...DEFAULT_SENDER_PROFILE, ...(stored.senderProfile || {}) },
-    claimSettings: { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) }
+    claimSettings: {
+      ...DEFAULT_CLAIM_SETTINGS,
+      ...previousSettings,
+      monitorServerUrl: MONITOR_ORIGIN,
+      cloudSyncEnabled: monitorOriginChanged ? false : previousSettings.cloudSyncEnabled === true,
+      monitorAccessToken: monitorOriginChanged ? "" : String(previousSettings.monitorAccessToken || "")
+    }
   });
   await scheduleMonitorAlertPolling();
   if (details.reason === "install") await chrome.runtime.openOptionsPage();
