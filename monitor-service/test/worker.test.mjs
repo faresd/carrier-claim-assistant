@@ -5,8 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import monitorWorker, {
   allowedApiOrigin,
   classifyTrackingState,
+  dashboardOrderSummary,
   enqueueDailyMonitor,
   fetchOfficialTracking,
+  fetchOpenAIInterpretation,
+  interpretAmbiguousTracking,
   monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
@@ -67,6 +70,28 @@ test("keeps return-in-transit and lost parcels in separate queues", () => {
   assert.equal(classifyTrackingState("Votre colis ne peut plus être localisé."), "lost");
 });
 
+test("summarizes every dashboard queue independently of the current page", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const common = { marketplaceId: "A13V1IB3VIYZZH", carrierId: "laposte", sellerAccountId: "merchant-one", sellerAccountName: "Cheaply France" };
+  for (const [index, trackingState] of ["pickup_ready", "returning", "lost", "damaged", "resolved", "delivered"].entries()) {
+    await upsertOrder(db, {
+      ...common,
+      orderId: `400-000000${index}-000000${index}`,
+      trackingNumber: `8U0000000000${index}`,
+      trackingState: trackingState === "resolved" ? "in_transit" : trackingState,
+      recipientName: index === 2 ? "Camille Martin" : "Other Recipient"
+    });
+  }
+  await db.prepare("UPDATE orders SET tracking_state = 'resolved' WHERE order_id = ?")
+    .bind("400-0000004-0000004").run();
+  const summary = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders?view=lost&account=merchant-one"));
+  assert.deepEqual(summary.counts, { all: 6, pickup: 1, returning: 1, lost: 2, returned: 2, resolved: 1 });
+  assert.deepEqual(summary.accounts, [{ accountId: "merchant-one", accountName: "Cheaply France" }]);
+  const searched = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders?q=Camille"));
+  assert.deepEqual(searched.counts, { all: 1, pickup: 0, returning: 0, lost: 1, returned: 0, resolved: 0 });
+});
+
 test("lets the newest delivered or lost event override older return history", () => {
   assert.equal(classifyTrackingState(
     "Votre colis a été livré.",
@@ -106,6 +131,166 @@ test("turns a carrier abort into a bounded retryable error", async () => {
     }, 1000),
     /timed out after 1 second/i
   );
+});
+
+test("falls back to the official legacy Suivi v1 endpoint when v2 is unavailable", async () => {
+  const requests = [];
+  const result = await fetchOfficialTracking(
+    "CC105961572FR",
+    { LAPOSTE_OKAPI_KEY: "v2-key", LAPOSTE_LEGACY_ENABLED: "true" },
+    async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).includes("/suivi/v2/")) {
+        return Response.json({ code: "PENDING_APPROVAL", message: "Suivi v2 pending" }, { status: 403 });
+      }
+      return Response.json({ shipment: { event: [
+        { date: "2026-09-01T06:30:00Z", label: "Votre envoi retourné est disponible au bureau de poste", code: "DISPO" }
+      ] } });
+    }
+  );
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /\/suivi\/v2\/idships\/CC105961572FR\?lang=fr_FR$/);
+  assert.match(requests[1].url, /\/suivi\/v1\/CC105961572FR$/);
+  assert.equal(requests[1].options.headers["X-Okapi-Key"], "v2-key");
+  assert.equal(result.source, "laposte-suivi-v1");
+  assert.equal(result.trackingState, "pickup_ready");
+});
+
+test("uses a separate legacy key when one is configured", async () => {
+  const keys = [];
+  const result = await fetchOfficialTracking(
+    "CC105961572FR",
+    { LAPOSTE_LEGACY_OKAPI_KEY: "legacy-key" },
+    async (url, options) => {
+      keys.push(options.headers["X-Okapi-Key"]);
+      return Response.json({ shipment: { event: [{ label: "En transit", date: "2026-09-01T06:30:00Z" }] } });
+    }
+  );
+  assert.deepEqual(keys, ["legacy-key"]);
+  assert.equal(result.source, "laposte-suivi-v1");
+  assert.equal(result.trackingState, "in_transit");
+});
+
+test("reports both carrier failures without exposing credentials", async () => {
+  await assert.rejects(
+    () => fetchOfficialTracking("CC105961572FR", { LAPOSTE_OKAPI_KEY: "v2-secret", LAPOSTE_LEGACY_OKAPI_KEY: "v1-secret" }, async (url) => {
+      return Response.json({ code: "DENIED", message: "not authorized" }, { status: 403 });
+    }),
+    (error) => /Suivi v2.*Suivi v1/.test(error.message) && !error.message.includes("secret")
+  );
+});
+
+test("uses Responses structured output to explain an ambiguous carrier message", async () => {
+  let request;
+  const result = await fetchOpenAIInterpretation({
+    statusText: "Information prochainement disponible.",
+    statusSummary: "Mise à jour en attente"
+  }, {
+    OPENAI_API_KEY: "openai-test-key",
+    OPENAI_MODEL: "gpt-5-mini"
+  }, async (url, options) => {
+    request = { url, options };
+    return Response.json({
+      output_text: JSON.stringify({
+        suggestedState: "returning",
+        confidence: 0.91,
+        explanation: "Le message ne confirme pas la livraison et évoque une mise à jour de suivi en attente.",
+        needsHumanReview: true
+      })
+    });
+  });
+
+  assert.equal(request.url, "https://api.openai.com/v1/responses");
+  assert.equal(request.options.method, "POST");
+  assert.equal(request.options.headers.authorization, "Bearer openai-test-key");
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.model, "gpt-5-mini");
+  assert.equal(body.store, false);
+  assert.equal(body.text.format.type, "json_schema");
+  assert.equal(body.text.format.strict, true);
+  assert.match(body.instructions, /untrusted data/i);
+  assert.match(body.input, /Information prochainement disponible/i);
+  assert.deepEqual(result, {
+    suggestedState: "returning",
+    confidence: 0.91,
+    explanation: "Le message ne confirme pas la livraison et évoque une mise à jour de suivi en attente.",
+    needsHumanReview: true
+  });
+});
+
+test("keeps deterministic state authoritative while adding an AI note for unknown tracking", async () => {
+  let calls = 0;
+  const result = await interpretAmbiguousTracking({
+    trackingState: "unknown",
+    statusText: "Information prochainement disponible.",
+    statusSummary: "Mise à jour en attente"
+  }, { OPENAI_API_KEY: "openai-test-key" }, async () => {
+    calls += 1;
+    return Response.json({ output_text: JSON.stringify({
+      suggestedState: "pickup_ready",
+      confidence: 0.88,
+      explanation: "Le suivi suggère une disponibilité, mais le lieu de retrait n'est pas confirmé.",
+      needsHumanReview: true
+    }) });
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.trackingState, "unknown");
+  assert.equal(result.aiInterpretation.suggestedState, "pickup_ready");
+  assert.match(result.statusSummary, /AI interpretation/i);
+  assert.match(result.statusSummary, /human review/i);
+});
+
+test("does not call AI for a known tracking state or when the key is absent", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return Response.json({});
+  };
+  const known = await interpretAmbiguousTracking({ trackingState: "delivered", statusText: "Livré" }, { OPENAI_API_KEY: "key" }, fetchImpl);
+  const withoutKey = await interpretAmbiguousTracking({ trackingState: "unknown", statusText: "Inconnu" }, {}, fetchImpl);
+  assert.equal(known.trackingState, "delivered");
+  assert.equal(withoutKey.trackingState, "unknown");
+  assert.equal(calls, 0);
+});
+
+test("keeps carrier processing successful when OpenAI is unavailable", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const queued = [];
+  const env = {
+    DB: db,
+    LAPOSTE_OKAPI_KEY: "okapi-test-key",
+    OPENAI_API_KEY: "openai-test-key",
+    TRACKING_QUEUE: { async sendBatch(messages) { queued.push(...messages); } }
+  };
+  await upsertOrder(db, {
+    orderId: "405-4311026-6542766",
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "merchant-ai-fallback",
+    marketplaceId: "A13V1IB3VIYZZH",
+    trackingState: "in_transit"
+  });
+  await enqueueDailyMonitor(env, new Date("2026-09-05T05:05:00.000Z"));
+  let acknowledged = false;
+  await processTrackingMessage({
+    body: queued[0].body,
+    ack() { acknowledged = true; },
+    retry() { throw new Error("AI failure must not retry the queue job."); }
+  }, env, {
+    fetchImpl: async (url) => {
+      if (String(url) === "https://api.openai.com/v1/responses") throw new Error("OpenAI outage");
+      return Response.json({ returnCode: 200, shipment: { event: [{
+        date: "2026-09-05T05:10:00.000Z", label: "Information prochainement disponible.", code: "INFO"
+      }] } });
+    }
+  });
+  assert.equal(acknowledged, true);
+  const stored = database.prepare("SELECT tracking_state, status_text, status_summary FROM orders").get();
+  assert.equal(stored.tracking_state, "in_transit");
+  assert.match(stored.status_text, /prochainement disponible/i);
+  assert.doesNotMatch(stored.status_summary, /AI interpretation/i);
 });
 
 test("runs only during the seven o'clock Paris hour", () => {
