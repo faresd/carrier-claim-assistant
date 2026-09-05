@@ -28,6 +28,7 @@
     return {
       pickup_ready: "Pickup required",
       returning: "Returning to sender",
+      returned_delivered: "Returned · confirm receipt",
       lost: "Lost / unlocated",
       damaged: "Damaged",
       resolved: "Returned · received",
@@ -73,7 +74,7 @@
     if (["lost", "returned", "delayed", "damaged", "delivered_missing", "contents_missing", "other"].includes(order.claimReason)) {
       return order.claimReason;
     }
-    if (["returning", "pickup_ready"].includes(order.trackingState)) return "returned";
+    if (["returning", "pickup_ready", "returned_delivered"].includes(order.trackingState)) return "returned";
     if (order.trackingState === "damaged") return "damaged";
     if (order.trackingState === "lost") return "lost";
     return "other";
@@ -111,7 +112,7 @@
       pickup: count(["pickup_ready"]),
       returning: count(["returning"]),
       lost: count(["lost", "damaged"]),
-      returned: count(["returning", "pickup_ready"]),
+      returned: count(["returning", "pickup_ready", "returned_delivered"]),
       resolved: count(["resolved"])
     };
   }
@@ -158,7 +159,7 @@
           <button class="recheck" type="button" data-recheck="${escapeHtml(order.recordId)}" aria-label="Recheck order ${escapeHtml(order.orderId)}" title="Recheck this parcel now">↻</button>
           <button type="button" data-detail="${escapeHtml(order.recordId)}">Details</button>
           ${!["resolved", "delivered"].includes(order.trackingState) && order.claimStatus !== "sent" ? `<button type="button" data-launch-claim="${escapeHtml(order.recordId)}">Start ${/chrono/i.test(order.carrierId || order.carrierLabel) ? "Chronopost" : "La Poste"} claim</button>` : ""}
-          ${["returning", "pickup_ready"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Confirm received</button>` : ""}
+          ${["returning", "pickup_ready", "returned_delivered"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Confirm received</button>` : ""}
           ${["lost", "damaged"].includes(order.trackingState) ? `<button class="receive" type="button" data-resolve="${escapeHtml(order.recordId)}">Mark resolved</button>` : ""}
           ${order.trackingState === "resolved" ? `<button type="button" data-reopen="${escapeHtml(order.recordId)}">Reopen</button>` : ""}
           ${order.trackingState === "resolved" ? `<button class="delete" type="button" data-delete="${escapeHtml(order.recordId)}">Delete record</button>` : ""}
@@ -236,6 +237,7 @@
       ["Tracking state", labelFor(order.trackingState)], ["Tracking number", order.trackingNumber],
       ["Carrier", order.carrierLabel || order.carrierId], ["Last checked", dateTime(order.checkedAt)],
       ["Tracking source", trackingSourceLabel(order.trackingSource)],
+      ["Current carrier summary", order.statusCurrentSummary],
       ["Amazon order date", order.orderDate], ["Shipment dates", [order.shipDate && `Shipped ${order.shipDate}`, order.deliverBy && `Deliver by ${order.deliverBy}`].filter(Boolean).join(" · ")],
       ["Recipient title", claimData.recipientTitle], ["Recipient", order.recipientName], ["Destination", [order.recipientAddress1, order.recipientAddress2, order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(", ")],
       ["Sender", [sender.companyName, sender.contactFirstName, sender.contactLastName].filter(Boolean).join(" ")],
@@ -400,7 +402,7 @@
         return;
       }
       if (button.dataset.resolve) {
-        const returned = ["returning", "pickup_ready"].includes(order.trackingState);
+        const returned = ["returning", "pickup_ready", "returned_delivered"].includes(order.trackingState);
         if (!confirm(returned ? `Confirm that returned order ${order.orderId} was physically received?` : `Mark order ${order.orderId} as resolved?`)) return;
         await api(`/api/orders/${encodeURIComponent(recordId)}/resolve`, { method: "POST", body: JSON.stringify({ note: returned ? "Returned parcel physically received" : "Lost/damaged case manually resolved" }) });
         notify("Order moved to Resolved.");
