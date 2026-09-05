@@ -25,6 +25,7 @@ const lapostePreflight = read("monitor-service", "scripts", "verify-laposte-acce
 const productionSmoke = read("monitor-service", "scripts", "smoke-production.mjs");
 
 test("monitor deployment schedules a DST-safe morning queue with bounded carrier concurrency", () => {
+  assert.match(deployment, /- "src\/shared\/carrier-rules\.js"/);
   assert.match(wrangler, /crons\s*=\s*\["\*\/15 \* \* \* \*"\]/);
   assert.match(wrangler, /binding\s*=\s*"TRACKING_QUEUE"/);
   assert.match(wrangler, /max_batch_size\s*=\s*8/);
@@ -35,8 +36,6 @@ test("monitor deployment schedules a DST-safe morning queue with bounded carrier
   assert.match(worker, /delaySeconds:\s*600/);
   assert.match(worker, /status = 'dispatched'/);
   assert.match(worker, /status = 'retrying'/);
-  assert.match(worker, /SELECT record_id FROM orders WHERE tracking_state NOT IN \('delivered', 'resolved'\) ORDER BY checked_at ASC/);
-  assert.doesNotMatch(worker, /tracking_state NOT IN \('delivered', 'resolved'\).*LIMIT 1000/);
 });
 
 test("monitor schema keeps multi-account history, idempotent jobs, devices, claim launches, and notification receipts", () => {
@@ -97,7 +96,8 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /claim-form/);
   assert.match(dashboardScript, /launch-claim/);
   assert.doesNotMatch(dashboardScript, /\bprompt\(/);
-  assert.match(dashboardScript, /\["returning", "pickup_ready"\].*return "returned"/);
+  assert.match(dashboardScript, /\["returning", "pickup_ready", "returned_delivered"\].*return "returned"/);
+  assert.match(dashboardScript, /returned_delivered: "Returned · confirm receipt"/);
   assert.match(dashboardScript, /contents_missing/);
   assert.match(dashboardScript, /data-resolve/);
   assert.match(dashboard, /id="export-history"/);

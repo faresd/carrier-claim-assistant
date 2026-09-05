@@ -6,6 +6,8 @@ const {
   carrierFromTrackingNumber,
   detectCarrier,
   recommendClaim,
+  classifyTrackingState,
+  repairAudit,
   isTerminalDeliveredRecommendation,
   buildClaimMessage,
   carrierReasonContract,
@@ -13,6 +15,82 @@ const {
   laPosteCountryLabel,
   firstLaPosteSubjectAnswerIndex
 } = require("../src/shared/carrier-rules.js");
+
+test("classifies sender-return completion separately from buyer delivery using current evidence", () => {
+  const cases = [
+    ["Votre Colissimo a été livré à son expéditeur.", "", "", "returned_delivered"],
+    ["Votre colis est livré.", "Retour à l’expéditeur", "Votre Colissimo a été livré à son expéditeur.", "returned_delivered"],
+    ["Retour à l’expéditeur", "Votre Colissimo a été livré à son expéditeur. Votre colis est livré.", "", "returned_delivered"],
+    ["Votre colis est livré.", "Retour à l’expéditeur", "", "delivered"],
+    ["Votre colis est livré.", "Votre Colissimo a été livré à son expéditeur.", "", "delivered"],
+    ["Votre colis ne peut plus être localisé.", "Votre Colissimo a été livré à son expéditeur.", "", "lost"],
+    ["Votre colis n’a pas été livré à son expéditeur.", "", "", "unknown"],
+    ["Votre colis sera livré à son expéditeur.", "", "", "unknown"]
+  ];
+  for (const [current, history, currentSummary, expected] of cases) {
+    assert.equal(classifyTrackingState(current, history, currentSummary), expected, current);
+  }
+});
+
+test("recognizes completed mailbox distribution without mistaking future or failed distribution", () => {
+  assert.equal(classifyTrackingState("Votre envoi a été distribué dans votre boîte aux lettres."), "delivered");
+  assert.equal(classifyTrackingState("Votre envoi a bien été distribué dans votre boîte aux lettres."), "delivered");
+  assert.notEqual(classifyTrackingState("Votre envoi sera distribué dans votre boîte aux lettres."), "delivered");
+  assert.notEqual(classifyTrackingState("Votre envoi n’a pas été distribué dans votre boîte aux lettres."), "delivered");
+  assert.notEqual(classifyTrackingState("Votre envoi est non distribué."), "delivered");
+});
+
+test("only sender collection creates an urgent returned-parcel pickup state", () => {
+  const cases = [
+    ["Votre colis est mis à disposition de son expéditeur.", "", "pickup_ready"],
+    ["Votre colis est en attente de retrait par l’expéditeur.", "", "pickup_ready"],
+    ["Votre colis est disponible pour l’expéditeur.", "", "pickup_ready"],
+    ["Votre colis est disponible au bureau de poste.", "Retour à l’expéditeur", "pickup_ready"],
+    ["Votre colis est disponible au point relais pour le destinataire.", "Retour à l’expéditeur", "unknown"],
+    ["Votre colis est disponible au point relais.", "À défaut de retrait, il sera retourné à l’expéditeur.", "unknown"],
+    ["Votre envoi retourné est disponible au bureau de poste.", "", "pickup_ready"],
+    ["Votre colis est en retour à son expéditeur.", "", "returning"]
+  ];
+  for (const [current, history, expected] of cases) assert.equal(classifyTrackingState(current, history), expected, current);
+  for (const current of ["Votre colis sera disponible pour l’expéditeur.", "Votre colis n’est pas disponible pour l’expéditeur.", "Votre colis sera disponible au bureau de poste."]) {
+    assert.notEqual(classifyTrackingState(current, "Retour à l’expéditeur"), "pickup_ready", current);
+  }
+});
+
+test("server and extension prioritize an explicit current sender pickup card over generic delivery", async () => {
+  const { classifyTrackingState: serverClassify } = await import("../monitor-service/src/worker.mjs");
+  const history = "Retour à l’expéditeur. Disponible pour l’expéditeur.";
+  const pickupCard = "Disponible pour l’expéditeur.";
+  const cases = [
+    ["Votre colis est livré.", history, pickupCard, "pickup_ready"],
+    ["Votre colis est livré.", history, "", "delivered"],
+    ["Votre colis ne peut plus être localisé.", history, pickupCard, "lost"],
+    ["Votre colis est endommagé.", history, pickupCard, "damaged"],
+    ["Votre colis est disponible au point relais pour le destinataire.", history, pickupCard, "unknown"],
+    ["Votre colis est livré au destinataire.", history, pickupCard, "delivered"],
+    ["Votre colis est livré.", history, "Sera disponible pour l’expéditeur.", "delivered"]
+  ];
+  for (const classify of [classifyTrackingState, serverClassify]) {
+    for (const [current, summary, card, expected] of cases) {
+      assert.equal(classify(current, summary, card), expected, `${current} / ${card}`);
+    }
+  }
+});
+
+test("repairing a poisoned delivered audit keeps claim reason and genuine delivered caches intact", () => {
+  const old = {
+    order: { carrier: "Colissimo", trackingNumber: "CC113610754FR" },
+    result: { statusText: "Votre Colissimo a été livré à son expéditeur." },
+    recommendation: { recommended: false, reason: "delivered_missing", title: "Marked delivered" }
+  };
+  const repaired = repairAudit(old);
+  assert.equal(repaired.recommendation.trackingState, "returned_delivered");
+  assert.equal(repaired.recommendation.reason, "returned");
+  assert.equal(repaired.recommendation.title, "Returned · confirm receipt");
+  assert.equal(repaired.recommendation.recommended, false);
+  const ordinary = { ...old, result: { statusText: "Votre colis est livré.", summaryText: "Retour à l’expéditeur" } };
+  assert.equal(repairAudit(ordinary), ordinary);
+});
 
 test("maps Colissimo spelling variants to La Poste", () => {
   assert.equal(detectCarrier({ carrier: "COLISSIMOS", shippingService: "Colissimo international Europe" }).id, "laposte");

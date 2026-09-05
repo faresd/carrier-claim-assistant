@@ -19,10 +19,10 @@ function storageArea(target) {
   return {
     async get(keys) {
       const wanted = Array.isArray(keys) ? keys : [keys];
-      return Object.fromEntries(wanted.filter((key) => key in target).map((key) => [key, target[key]]));
+      return structuredClone(Object.fromEntries(wanted.filter((key) => key in target).map((key) => [key, target[key]])));
     },
     async set(values) {
-      Object.assign(target, values);
+      Object.assign(target, structuredClone(values));
     },
     async remove(keys) {
       for (const key of Array.isArray(keys) ? keys : [keys]) delete target[key];

@@ -4,6 +4,38 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const records = require("../src/shared/tracking-records.js");
 
+test("repairs the screenshot's return banner without resolving or forgetting the return", () => {
+  const record = {
+    orderId: "403-9672539-8018704", trackingNumber: "CC113610754FR", trackingState: "unknown",
+    statusText: "Retour à l’expéditeur", statusSummary: "Votre Colissimo a été livré à son expéditeur. Votre colis est livré."
+  };
+  const repaired = records.repairRecord(record);
+  assert.equal(repaired.trackingState, "returned_delivered");
+  assert.deepEqual(records.badgeForRecord(repaired), { state: "returned", label: "Returned · confirm receipt", actionable: true });
+  assert.equal(records.isTerminal(repaired), false);
+  assert.equal(records.monitorEligible(repaired), true);
+  const resolved = { ...record, trackingState: "resolved", resolvedAt: "2026-09-02T09:00:00Z" };
+  assert.equal(records.repairRecord(resolved), resolved);
+  assert.equal(records.buildRecord({ previous: resolved, order: record, result: { statusText: record.statusText, summaryText: record.statusSummary } }).trackingState, "resolved");
+});
+
+test("retains current status-card evidence and corrects a legacy delivered record on reload", () => {
+  const previous = {
+    orderId: "403-9672539-8018704", trackingNumber: "CC113610754FR", trackingState: "delivered",
+    statusText: "Votre colis est livré.", statusSummary: "Retour à l’expéditeur",
+    statusCurrentSummary: "Votre Colissimo a été livré à son expéditeur."
+  };
+  const record = records.buildRecord({ previous, order: { orderId: previous.orderId, trackingNumber: previous.trackingNumber } });
+  assert.equal(record.trackingState, "returned_delivered");
+  assert.equal(record.statusCurrentSummary, previous.statusCurrentSummary);
+  const ordinary = { ...previous, statusCurrentSummary: "" };
+  assert.equal(records.repairRecord(ordinary), ordinary);
+  assert.equal(records.isTerminal(ordinary), true);
+  const genericFollowup = records.buildRecord({ previous: record, order: { orderId: record.orderId, trackingNumber: record.trackingNumber }, result: { statusText: "Votre colis est livré." } });
+  assert.equal(genericFollowup.trackingState, "returned_delivered");
+  assert.equal(records.monitorEligible(genericFollowup), true);
+});
+
 test("detects urgent sender pickup only in a return context", () => {
   assert.equal(records.trackingState({
     statusText: "Votre envoi retourné est disponible au bureau de poste",
