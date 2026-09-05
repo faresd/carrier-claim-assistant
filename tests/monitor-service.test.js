@@ -203,7 +203,9 @@ test("monitor deployment verifies the live security and authentication boundary"
   assert.match(worker, /sqlite_master/);
   assert.match(worker, /REQUIRED_SCHEMA_TABLES/);
   assert.match(productionSmoke, /\/api\/orders/);
-  assert.match(productionSmoke, /content-security-policy/);
+  assert.match(productionSmoke, /\/app\.js/);
+  assert.match(productionSmoke, /__Host-carrier_monitor_oauth=/);
+  assert.match(productionSmoke, /dashboard\.status !== 302/);
   assert.match(productionSmoke, /https:\/\/auth\.cheaply\.fr/);
   assert.match(productionSmoke, /code_challenge_method/);
   assert.match(deployment, /group: carrier-return-monitor-production/);
