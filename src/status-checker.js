@@ -8,6 +8,7 @@
     String(value || "")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\u2018\u2019\u02bc]/g, "'")
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
@@ -43,7 +44,7 @@
       .split(/\r?\n/)
       .map((line) => line.replace(/\s+/g, " ").trim())
       .filter((line) => line.length >= 15 && line.length <= 320);
-    const terms = /livr|remis|remettre|remise|achemin|transit|retrait|incident|retard|douane|endommag|deterior|perdu|introuvable|retour|destinataire|distribution|pris en charge|envoi/i;
+    const terms = /livr|remis|remettre|remise|achemin|transit|retrait|incident|retard|douane|endommag|deterior|perdu|introuvable|retour|destinataire|exp[eé]diteur|distribution|pris en charge|envoi/i;
     return lines.filter((line) => terms.test(line));
   }
 
@@ -136,7 +137,21 @@
       ? bodyLines.slice(Math.max(0, trackingIndex - 4), trackingIndex + 14).filter((line) => candidateStatusLines({ innerText: line }).length)
       : [];
     const boilerplate = /informations concernant votre envoi|comment suivre|suivre votre (?:colis|envoi)|outil de suivi|renseignez|entrez votre numero|attention aux messages|besoin d'aide|temps reel|nos solutions|decouvrez|questions frequentes|faq/i;
-    const statusText = [...nearbyLines, ...lines].find((line) => !boilerplate.test(line)) || "";
+    const candidateLines = [...nearbyLines, ...lines].filter((line) => !boilerplate.test(line));
+    let statusText = candidateLines[0] || "";
+    let currentSummaryText = statusText;
+    // La Poste separates its return banner from the detailed current status card.
+    // Only combine adjacent status-card text; the dated timeline is historical evidence.
+    if (/^retour(?:ne|nee)? (?:a (?:l'|son )|vers (?:l'|son ))expediteur[.! ]*$/.test(normalize(statusText))) {
+      const statusIndex = bodyLines.findIndex((line) => normalize(line) === normalize(statusText));
+      const adjacent = [];
+      for (const line of bodyLines.slice(statusIndex + 1, statusIndex + 5)) {
+        if (/^(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)|\b\d{1,2}[/.]\d{1,2}[/.]\d{4}\b/i.test(line)) break;
+        if (candidateStatusLines({ innerText: line }).length && !boilerplate.test(line)) adjacent.push(line);
+      }
+      currentSummaryText = [statusText, ...adjacent].join(" · ").slice(0, 1000);
+      if (adjacent.length) statusText = adjacent.join(" ").slice(0, 1000);
+    }
     const inputValues = deepQueryAll("input").map((input) => input.value).join(" ");
     const hasTracking = normalize(`${combinedText} ${inputValues}`).includes(normalizedTracking);
     const hasResult = hasTracking && trackingIndex >= 0 && Boolean(statusText);
@@ -144,6 +159,7 @@
       carrier,
       statusText: statusText || "Carrier page loaded, but no concise status line was detected.",
       summaryText,
+      currentSummaryText,
       eventDate: extractEventDate(summaryText),
       hasResult
     };

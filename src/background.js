@@ -51,32 +51,55 @@ const ORDER_AUDIT_LOAD_TIMEOUT_MS = 30000;
 const SELLER_NOTE_RETRY_ATTEMPTS = 24;
 const SELLER_NOTE_RETRY_DELAY_MS = 750;
 
-chrome.runtime.onInstalled.addListener(async (details) => {
-  const stored = await chrome.storage.local.get([
-    "senderProfile", "claimSettings", TRACKED_ORDERS_KEY, CLAIM_OUTCOMES_KEY, ORDER_AUDITS_KEY
-  ]);
-  const previousSettings = stored.claimSettings || {};
-  let monitorOriginChanged = false;
-  if (previousSettings.monitorServerUrl) {
-    try {
-      monitorOriginChanged = new URL(previousSettings.monitorServerUrl).origin !== MONITOR_ORIGIN;
-    } catch {
-      monitorOriginChanged = true;
+// Chrome storage does not make read/modify/write atomic. Keep every writer of
+// this shared map in one service-worker queue; never wait for the network here.
+let trackedOrdersMutation = Promise.resolve();
+function mutateTrackedOrders(mutator, extraKeys = []) {
+  const mutation = trackedOrdersMutation.then(async () => {
+    const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, ...extraKeys]);
+    const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
+    for (const [key, record] of Object.entries(records)) {
+      const repaired = trackingRecords.repairRecord?.(record) || record;
+      const original = trackingRecords.findRecordEntry(stored[TRACKED_ORDERS_KEY] || {}, record)?.value || record;
+      const changed = repaired.trackingState !== original.trackingState;
+      records[key] = {
+        ...repaired,
+        cloudSyncRevision: changed || !record.cloudSyncRevision ? crypto.randomUUID() : record.cloudSyncRevision,
+        ...(changed ? { cloudSyncedAt: "", cloudSyncError: "" } : {})
+      };
     }
-  }
-  await chrome.storage.local.set({
-    senderProfile: { ...DEFAULT_SENDER_PROFILE, ...(stored.senderProfile || {}) },
-    claimSettings: {
-      ...DEFAULT_CLAIM_SETTINGS,
-      ...previousSettings,
-      monitorServerUrl: MONITOR_ORIGIN,
-      cloudSyncEnabled: monitorOriginChanged ? false : previousSettings.cloudSyncEnabled === true,
-      monitorAccessToken: monitorOriginChanged ? "" : String(previousSettings.monitorAccessToken || "")
-    },
-    [TRACKED_ORDERS_KEY]: trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {}),
-    [CLAIM_OUTCOMES_KEY]: trackingRecords.rekeyRecords(stored[CLAIM_OUTCOMES_KEY] || {}),
-    [ORDER_AUDITS_KEY]: trackingRecords.rekeyRecords(stored[ORDER_AUDITS_KEY] || {})
+    const result = await mutator(records, stored);
+    await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
+    return result;
   });
+  trackedOrdersMutation = mutation.catch(() => {});
+  return mutation;
+}
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  await mutateTrackedOrders(async (records, stored) => {
+    const previousSettings = stored.claimSettings || {};
+    let monitorOriginChanged = false;
+    if (previousSettings.monitorServerUrl) {
+      try {
+        monitorOriginChanged = new URL(previousSettings.monitorServerUrl).origin !== MONITOR_ORIGIN;
+      } catch {
+        monitorOriginChanged = true;
+      }
+    }
+    await chrome.storage.local.set({
+      senderProfile: { ...DEFAULT_SENDER_PROFILE, ...(stored.senderProfile || {}) },
+      claimSettings: {
+        ...DEFAULT_CLAIM_SETTINGS,
+        ...previousSettings,
+        monitorServerUrl: MONITOR_ORIGIN,
+        cloudSyncEnabled: monitorOriginChanged ? false : previousSettings.cloudSyncEnabled === true,
+        monitorAccessToken: monitorOriginChanged ? "" : String(previousSettings.monitorAccessToken || "")
+      },
+      [CLAIM_OUTCOMES_KEY]: trackingRecords.rekeyRecords(stored[CLAIM_OUTCOMES_KEY] || {}),
+      [ORDER_AUDITS_KEY]: trackingRecords.rekeyRecords(stored[ORDER_AUDITS_KEY] || {})
+    });
+  }, ["senderProfile", "claimSettings", CLAIM_OUTCOMES_KEY, ORDER_AUDITS_KEY]);
   await scheduleMonitorAlertPolling();
   if (details.reason === "install") await chrome.runtime.openOptionsPage();
 });
@@ -190,6 +213,7 @@ function buildClaimPayload(order, record, senderProfile, recommendation, result 
     trackingStatus: {
       statusText: result.statusText || record.statusText || "",
       summaryText: result.summaryText || record.statusSummary || "",
+      currentSummaryText: result.currentSummaryText || record.statusCurrentSummary || "",
       checkedAt: result.checkedAt || record.checkedAt || ""
     },
     order: {
@@ -224,113 +248,172 @@ function buildClaimPayload(order, record, senderProfile, recommendation, result 
 
 async function saveTrackingRecord(order, result = {}, recommendation = null, outcome = null) {
   if (!order?.orderId || !order?.trackingNumber || !trackingRecords) return null;
-  const stored = await chrome.storage.local.get([TRACKED_ORDERS_KEY, "claimSettings", "senderProfile", CLAIM_OUTCOMES_KEY]);
-  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
-  const previousEntry = trackingRecords.findRecordEntry(records, order);
-  const previous = previousEntry?.value || null;
-  const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
-  const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
-  const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
-  const previousIdentity = trackingRecords.identity(previous || {});
-  const orderIdentity = trackingRecords.identity(order);
-  const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
-  const accountWasDisambiguated = previous && fallbackAccounts.has(previousIdentity.sellerAccountId)
-    && !fallbackAccounts.has(orderIdentity.sellerAccountId);
-  const record = {
-    ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
-    cloudSyncedAt: "",
-    cloudSyncError: "",
-    cloudDeletedAt: accountWasDisambiguated ? "" : previous?.cloudDeletedAt || ""
-  };
-  record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
-  if (previousEntry?.key && previousEntry.key !== record.recordId) delete records[previousEntry.key];
-  records[record.recordId] = record;
-  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-  const config = normalizedMonitorConfig(settings);
+  const { record, config } = await mutateTrackedOrders((records, stored) => {
+    const previousEntry = trackingRecords.findRecordEntry(records, order);
+    const previous = previousEntry?.value || null;
+    const settings = { ...DEFAULT_CLAIM_SETTINGS, ...(stored.claimSettings || {}) };
+    const resolvedRecommendation = recommendation || carrierRules.recommendClaim(order, result || {}, settings);
+    const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
+    const previousIdentity = trackingRecords.identity(previous || {});
+    const orderIdentity = trackingRecords.identity(order);
+    const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+    const accountWasDisambiguated = previous && fallbackAccounts.has(previousIdentity.sellerAccountId)
+      && !fallbackAccounts.has(orderIdentity.sellerAccountId);
+    const record = {
+      ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
+      cloudSyncRevision: crypto.randomUUID(),
+      cloudSyncedAt: "",
+      cloudSyncError: "",
+      cloudDeletedAt: accountWasDisambiguated ? "" : previous?.cloudDeletedAt || ""
+    };
+    record.claimPayload = buildClaimPayload(order, record, stored.senderProfile, resolvedRecommendation, result);
+    if (previousEntry?.key && previousEntry.key !== record.recordId) delete records[previousEntry.key];
+    records[record.recordId] = record;
+    return { record, config: normalizedMonitorConfig(settings) };
+  }, ["claimSettings", "senderProfile", CLAIM_OUTCOMES_KEY]);
   if (config.enabled && !record.cloudDeletedAt) {
-    const attemptedAt = new Date().toISOString();
-    await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) }).then(async () => {
-      records[record.recordId] = { ...record, cloudSyncedAt: attemptedAt, cloudSyncAttemptedAt: attemptedAt, cloudSyncError: "" };
-      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-    }).catch(async (error) => {
-      records[record.recordId] = error.permanentlyDeleted
-        ? { ...record, cloudSyncedAt: attemptedAt, cloudDeletedAt: attemptedAt, cloudSyncError: "", cloudSyncAttemptedAt: attemptedAt }
-        : { ...record, cloudSyncError: error.message, cloudSyncAttemptedAt: attemptedAt };
-      await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-    });
+    return (await uploadTrackingRecord(record)).record;
   }
-  return records[record.recordId];
+  return record;
+}
+
+function isPendingTrackingRecord(record) {
+  return record?.orderId && record?.trackingNumber && !record.cloudDeletedAt && (!record.cloudSyncedAt || record.cloudSyncError);
+}
+
+// Serialize uploads per order, not globally: a slow request must not prevent
+// other accounts being saved, nor arrive after a newer version of this order.
+const trackingUploads = new Map();
+function uploadTrackingRecord(snapshot) {
+  const key = trackingRecords.recordKey(snapshot);
+  const previous = trackingUploads.get(key) || Promise.resolve();
+  const upload = previous.catch(() => {}).then(async () => {
+    const record = await mutateTrackedOrders((records) => records[key] || null);
+    if (!isPendingTrackingRecord(record) || record.cloudSyncRevision !== snapshot.cloudSyncRevision) {
+      return { record, skipped: true };
+    }
+    const attemptedAt = new Date().toISOString();
+    let error = null;
+    try {
+      await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) });
+    } catch (failure) {
+      error = failure;
+    }
+    const saved = await mutateTrackedOrders((records) => {
+      const current = records[key];
+      // A completed request is not permission to recreate a removed order or
+      // acknowledge a newer local version that it did not actually upload.
+      if (!current || current.cloudDeletedAt) return current || null;
+      if (error?.permanentlyDeleted) {
+        records[key] = { ...current, cloudSyncedAt: attemptedAt, cloudDeletedAt: attemptedAt, cloudSyncError: "", cloudSyncAttemptedAt: attemptedAt };
+      } else if (current.cloudSyncRevision === record.cloudSyncRevision) {
+        records[key] = {
+          ...current,
+          cloudSyncedAt: error ? current.cloudSyncedAt || "" : attemptedAt,
+          cloudSyncAttemptedAt: attemptedAt,
+          cloudSyncError: error?.message || ""
+        };
+      }
+      return records[key];
+    });
+    return { record: saved, error };
+  });
+  trackingUploads.set(key, upload);
+  upload.finally(() => { if (trackingUploads.get(key) === upload) trackingUploads.delete(key); }).catch(() => {});
+  return upload;
 }
 
 async function syncPendingTrackingRecords({ limit = 50 } = {}) {
   const config = await monitorConfig();
   if (!config.enabled) return { ok: true, skipped: true, uploaded: 0, remaining: 0 };
-  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
-  const pending = Object.values(records).filter((record) =>
-    record?.orderId && record?.trackingNumber && !record.cloudDeletedAt && (!record.cloudSyncedAt || record.cloudSyncError)
-  );
+  const pending = await mutateTrackedOrders((records) => Object.values(records).filter(isPendingTrackingRecord));
   let uploaded = 0;
   let failed = 0;
   let suppressed = 0;
   for (const record of pending.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)))) {
-    const key = trackingRecords.recordKey(record);
-    if (!key) continue;
-    const attemptedAt = new Date().toISOString();
-    try {
-      await monitorRequest("/api/orders", { method: "POST", body: JSON.stringify(record) });
-      records[key] = {
-        ...records[key],
-        cloudSyncedAt: attemptedAt,
-        cloudSyncAttemptedAt: attemptedAt,
-        cloudSyncError: ""
-      };
-      uploaded += 1;
-    } catch (error) {
-      records[key] = {
-        ...records[key],
-        cloudSyncAttemptedAt: attemptedAt,
-        cloudSyncError: error.message
-      };
-      if (error.permanentlyDeleted) {
-        records[key] = {
-          ...records[key],
-          cloudSyncedAt: attemptedAt,
-          cloudDeletedAt: attemptedAt,
-          cloudSyncAttemptedAt: attemptedAt,
-          cloudSyncError: ""
-        };
+    const result = await uploadTrackingRecord(record);
+    if (result.skipped) continue;
+    if (!result.error) uploaded += 1;
+    else {
+      if (result.error.permanentlyDeleted) {
         suppressed += 1;
         continue;
       }
       failed += 1;
-      if (/revoked|not configured/i.test(error.message)) break;
+      if (/revoked|not configured/i.test(result.error.message)) break;
     }
   }
-  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-  return { ok: failed === 0, uploaded, failed, suppressed, remaining: Math.max(0, pending.length - uploaded - suppressed) };
+  const remaining = await mutateTrackedOrders((records) => Object.values(records).filter(isPendingTrackingRecord).length);
+  return { ok: failed === 0, uploaded, failed, suppressed, remaining };
 }
 
 async function mergeRemoteTrackingRecords(remoteOrders = []) {
-  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
-  for (const remote of remoteOrders) {
-    if (!remote?.orderId) continue;
-    const previousEntry = trackingRecords.findRecordEntry(records, remote);
-    const local = previousEntry?.value || {};
-    const key = trackingRecords.recordKey(remote);
-    if (!key) continue;
-    if (previousEntry?.key && previousEntry.key !== key) delete records[previousEntry.key];
-    records[key] = {
-      ...local,
-      ...remote,
-      sourceUrl: remote.amazonUrl || local.sourceUrl || "",
-      sellerAccountId: remote.accountId || local.sellerAccountId || "",
-      sellerAccountName: remote.accountName || local.sellerAccountName || ""
-    };
-  }
-  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-  return records;
+  return mutateTrackedOrders((records) => {
+    for (const remote of remoteOrders) {
+      if (!remote?.orderId) continue;
+      const previousEntry = trackingRecords.findRecordEntry(records, remote);
+      const local = previousEntry?.value || {};
+      const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+      const preserveAccount = previousEntry && !fallbackAccounts.has(trackingRecords.identity(local).sellerAccountId)
+        && fallbackAccounts.has(trackingRecords.identity(remote).sellerAccountId);
+      const key = trackingRecords.recordKey(preserveAccount ? local : remote);
+      if (!key || local.cloudDeletedAt) continue;
+      if (previousEntry?.key && previousEntry.key !== key) delete records[previousEntry.key];
+      const incoming = {
+        ...local,
+        ...remote,
+        recordId: key,
+        sourceUrl: remote.amazonUrl || local.sourceUrl || "",
+        sellerAccountId: preserveAccount ? local.sellerAccountId : remote.accountId || remote.sellerAccountId || local.sellerAccountId || "",
+        sellerAccountName: preserveAccount ? local.sellerAccountName : remote.accountName || remote.sellerAccountName || local.sellerAccountName || "",
+        cloudSyncedAt: local.cloudSyncedAt || (previousEntry ? "" : new Date().toISOString()),
+        cloudSyncError: local.cloudSyncError || "",
+        cloudDeletedAt: local.cloudDeletedAt || ""
+      };
+      // Do not replace an unsent local edit with a remote snapshot. Server-side
+      // receipt confirmation and a genuinely newer carrier check still win.
+      const remoteDataIsOlder = Date.parse(remote.updatedAt || "") < Date.parse(local.updatedAt || "");
+      const merged = isPendingTrackingRecord(local) || remoteDataIsOlder ? { ...incoming, ...local } : incoming;
+      merged.recordId = key;
+      merged.sellerAccountId = incoming.sellerAccountId;
+      merged.marketplaceId = incoming.marketplaceId;
+      if ("accountId" in merged) merged.accountId = incoming.sellerAccountId;
+      const localServerRevision = Date.parse(local.cloudUpdatedAt || local.resolvedAt || "");
+      const remoteServerRevision = Date.parse(remote.updatedAt || "");
+      const staleRemoteState = remoteServerRevision < localServerRevision;
+      const remoteReopened = local.trackingState === "resolved" && remote.trackingState && remote.trackingState !== "resolved"
+        && remote.resolvedAt === "" && remoteServerRevision > localServerRevision;
+      if (remote.updatedAt && (!local.cloudUpdatedAt || remoteServerRevision >= Date.parse(local.cloudUpdatedAt))) {
+        merged.cloudUpdatedAt = remote.updatedAt;
+      }
+      const remoteIsNewer = Date.parse(remote.checkedAt || "") > Date.parse(local.checkedAt || "") ||
+        (remote.checkedAt && !local.checkedAt);
+      const preserveLocalStatus = staleRemoteState || (local.trackingState === "resolved" && !remoteReopened)
+        || (local.trackingState === "returned_delivered" && ["delivered", "unknown"].includes(remote.trackingState))
+        || (!remoteIsNewer && local.checkedAt && local.checkedAt !== remote.checkedAt);
+      const serverResolution = !staleRemoteState && (remote.trackingState === "resolved" || remoteReopened);
+      const statusOwner = serverResolution ? remote : preserveLocalStatus ? local : remoteIsNewer ? remote : merged;
+      for (const field of ["trackingState", "statusText", "statusSummary", "statusCurrentSummary", "checkedAt", "trackingSource", "resolvedAt", "resolutionNote"]) {
+        if (field in statusOwner) merged[field] = statusOwner[field];
+      }
+      const remoteClaimIsOlder = Date.parse(remote.claimSubmittedAt || "") < Date.parse(local.claimSubmittedAt || "");
+      const claimOwner = remote.claimStatus === "sent" && !(local.claimStatus === "sent" && remoteClaimIsOlder)
+        ? remote : local.claimStatus === "sent" ? local : null;
+      if (claimOwner) {
+        for (const field of ["claimStatus", "claimReference", "claimSubmittedAt"]) {
+          if (field in claimOwner) merged[field] = claimOwner[field];
+        }
+        if (!merged.claimReference && local.claimStatus === "sent" && local.claimReference &&
+          (!remote.claimSubmittedAt || remote.claimSubmittedAt === local.claimSubmittedAt)) merged.claimReference = local.claimReference;
+      }
+      const repaired = trackingRecords.repairRecord?.(merged) || merged;
+      records[key] = {
+        ...repaired,
+        cloudSyncRevision: JSON.stringify(repaired) === JSON.stringify(local) && local.cloudSyncRevision ? local.cloudSyncRevision : crypto.randomUUID()
+      };
+    }
+    return records;
+  });
 }
 
 async function trackedRecords({ refresh = true, orderIds = [] } = {}) {
@@ -345,10 +428,7 @@ async function trackedRecords({ refresh = true, orderIds = [] } = {}) {
       if (payload?.orders) return mergeRemoteTrackingRecords(payload.orders);
     }
   }
-  const stored = await chrome.storage.local.get(TRACKED_ORDERS_KEY);
-  const records = trackingRecords.rekeyRecords(stored[TRACKED_ORDERS_KEY] || {});
-  await chrome.storage.local.set({ [TRACKED_ORDERS_KEY]: records });
-  return records;
+  return mutateTrackedOrders((records) => records);
 }
 
 async function refreshMonitorAlerts() {

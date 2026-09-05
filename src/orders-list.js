@@ -172,7 +172,11 @@
     const trackingRecord = recordForEntry(entry);
     const outcome = claimOutcomeForEntry(entry, trackingRecord);
     const auditEntry = auditEntryFor(entry);
-    const audit = auditEntry?.value;
+    const audit = rules.repairAudit(auditEntry?.value);
+    if (auditEntry && audit !== auditEntry.value) {
+      state.audits[auditEntry.key] = audit;
+      chrome.storage.local.set({ orderAuditResultsByOrder: state.audits });
+    }
     const returnBadge = trackingRecords.badgeForRecord(trackingRecord);
     if (returnBadge) {
       setBadge(
