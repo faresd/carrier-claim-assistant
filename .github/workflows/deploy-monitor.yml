@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - "monitor-service/**"
+      - "src/shared/carrier-rules.js"
       - ".github/workflows/deploy-monitor.yml"
 
 permissions:
