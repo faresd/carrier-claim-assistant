@@ -5,10 +5,13 @@ import { verifyProductionMonitor } from "../scripts/smoke-production.mjs";
 function successfulResponse(url) {
   const path = new URL(url).pathname;
   if (path === "/api/health") return Response.json({ ok: true, service: "carrier-return-monitor", ready: true });
-  if (path === "/") {
-    return new Response("dashboard", {
-      status: 200,
-      headers: { "content-security-policy": "default-src 'self'; frame-ancestors 'none'" }
+  if (path === "/" || path === "/app.js") {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: "https://auth.cheaply.fr/authorize?client_id=tracking-web&code_challenge_method=S256",
+        "set-cookie": "__Host-carrier_monitor_oauth=signed; Path=/; HttpOnly; Secure; SameSite=Lax"
+      }
     });
   }
   if (path === "/api/orders") return Response.json({ error: "Sign in required." }, { status: 401 });
@@ -21,7 +24,7 @@ function successfulResponse(url) {
   return new Response("missing", { status: 404 });
 }
 
-test("verifies the live health, dashboard policy, API boundary, and SSO redirect", async () => {
+test("verifies the live health, private dashboard boundary, API boundary, and SSO redirect", async () => {
   const visited = [];
   const result = await verifyProductionMonitor({
     fetchImpl: async (url) => {
@@ -31,7 +34,7 @@ test("verifies the live health, dashboard policy, API boundary, and SSO redirect
     attempts: 1
   });
   assert.equal(result, true);
-  assert.deepEqual(visited, ["/api/health", "/", "/api/orders", "/api/auth/login"]);
+  assert.deepEqual(visited, ["/api/health", "/", "/app.js", "/api/orders", "/api/auth/login"]);
 });
 
 test("retries a temporary custom-domain failure before succeeding", async () => {
