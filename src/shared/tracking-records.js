@@ -2,45 +2,31 @@
   "use strict";
 
   const TERMINAL_STATES = new Set(["delivered", "resolved"]);
+  const rules = root.CarrierClaimRules || (typeof require === "function" ? require("./carrier-rules.js") : null);
 
   function normalize(value) {
     return String(value || "")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\u2018\u2019\u02bc]/g, "'")
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
   }
 
   function trackingState(result = {}, recommendation = {}) {
-    const current = normalize(result.statusText || recommendation.statusText);
-    const all = normalize(`${result.statusText || ""} ${result.summaryText || ""} ${recommendation.statusText || ""}`);
-    const returnPattern = /retour(?:ne|nee|ne)?(?:\s+|.*\s)a l'expediteur|retour expediteur|renvoye a l'expediteur|returned to sender|return to sender|retour de votre envoi/;
-    const futureReturnPattern = /(?:sera|serait|pourra|pourrait|va|doit|devra) (?:etre )?(?:retourne|renvoye) a l'expediteur|(?:sans|faute de|a defaut de|en l'absence de) (?:votre )?retrait.*(?:retour|expediteur)|passe ce delai.*(?:retour|expediteur)/;
-    const returnContext = (returnPattern.test(current) && !futureReturnPattern.test(current)) ||
-      (returnPattern.test(all) && !futureReturnPattern.test(all));
-    const senderPickup = /mis(?:e)? a disposition de l'expediteur|disponible pour l'expediteur|expediteur.*(?:retirer|retrait|disponible)|retour.*(?:a retirer|disponible|point de retrait|bureau de poste|agence)/.test(current);
-    const pickup = /(?:disponible|vous attend|a retirer|en attente de retrait|mis(?:e)? a disposition).*(?:point de retrait|bureau de poste|agence|relais|site de retrait)|(?:point de retrait|bureau de poste|agence|relais).*(?:disponible|vous attend|a retirer|retrait)/.test(current);
-    const lostPattern = /perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/;
-    const damagedPattern = /endommage|deteriore|avarie|damaged|damage/;
-    const lost = lostPattern.test(all);
-    const damaged = damagedPattern.test(all);
-    const delivered = /(?:^|\b)(?:a (?:bien )?ete|est) livre\b|livraison (?:a ete )?effectuee|remis au destinataire|^livre\b|\bdelivered\b/.test(current) &&
-      !/non livre|pas livre|jamais livre|impossible de livrer|n'a pas pu.*remis|n'avons pu.*remettre|echec de livraison|tentative de livraison/.test(current);
+    return rules.resultTrackingState(result, recommendation);
+  }
 
-    if (senderPickup || (returnContext && pickup)) return "pickup_ready";
-    if (delivered) return "delivered";
-    if (lostPattern.test(current)) return "lost";
-    if (damagedPattern.test(current)) return "damaged";
-    if (returnContext) return "returning";
-    if (lost) return "lost";
-    if (damaged) return "damaged";
-    if (/acheminement|en transit|in transit|pris en charge|en cours de livraison|distribution|douane|customs/.test(all)) return "in_transit";
-    return "unknown";
+  function repairRecord(record) {
+    if (!record || !["delivered", "unknown"].includes(record.trackingState)) return record;
+    const detected = trackingState(record);
+    if (!["returned_delivered", "returning", "pickup_ready"].includes(detected)) return record;
+    return { ...record, trackingState: detected };
   }
 
   function isTerminal(record) {
-    return TERMINAL_STATES.has(record?.trackingState);
+    return TERMINAL_STATES.has(repairRecord(record)?.trackingState);
   }
 
   function monitorEligible(record, maxAgeDays = 120, now = Date.now()) {
@@ -123,7 +109,7 @@
       const existing = next[key];
       const existingTime = new Date(existing?.updatedAt || existing?.submittedAt || existing?.checkedAt || 0).getTime();
       const valueTime = new Date(value.updatedAt || value.submittedAt || value.checkedAt || 0).getTime();
-      if (!existing || !Number.isFinite(existingTime) || valueTime >= existingTime) next[key] = value;
+      if (!existing || !Number.isFinite(existingTime) || valueTime >= existingTime) next[key] = repairRecord(value);
     }
     return next;
   }
@@ -149,11 +135,14 @@
   }
 
   function buildRecord({ order = {}, result = {}, recommendation = {}, outcome = null, previous = null, now = new Date().toISOString() } = {}) {
+    previous = repairRecord(previous);
     const safeOrder = cleanOrder(order);
-    const hasFreshStatus = Boolean(result.statusText || result.summaryText || recommendation.statusText);
+    const hasFreshStatus = Boolean(result.statusText || result.summaryText || result.currentSummaryText || recommendation.statusText);
     const detectedState = trackingState(result, recommendation);
     const state = previous?.trackingState === "resolved"
       ? "resolved"
+      : previous?.trackingState === "returned_delivered" && ["delivered", "unknown"].includes(detectedState)
+        ? "returned_delivered"
       : hasFreshStatus
         ? detectedState
         : previous?.trackingState || detectedState;
@@ -173,6 +162,7 @@
       carrierLabel: recommendation?.carrier?.label || previous?.carrierLabel || safeOrder.carrier || "",
       statusText: String(result.statusText || recommendation.statusText || previous?.statusText || "").replace(/\s+/g, " ").trim().slice(0, 1000),
       statusSummary: String(result.summaryText || previous?.statusSummary || "").replace(/\s+/g, " ").trim().slice(0, 5000),
+      statusCurrentSummary: String(result.currentSummaryText || (!hasFreshStatus ? previous?.statusCurrentSummary : "") || "").replace(/\s+/g, " ").trim().slice(0, 1000),
       trackingState: state,
       claimRecommended: Boolean(recommendation?.recommended),
       claimReason: recommendation?.reason || previous?.claimReason || "none",
@@ -191,9 +181,11 @@
   }
 
   function badgeForRecord(record) {
+    record = repairRecord(record);
     const states = {
       pickup_ready: { state: "pickup", label: "Pickup required", actionable: true },
       returning: { state: "returned", label: "Returning to sender", actionable: true },
+      returned_delivered: { state: "returned", label: "Returned · confirm receipt", actionable: true },
       lost: { state: "recommended", label: "Lost · investigate", actionable: true },
       delivered: { state: "delivered", label: "Delivered", actionable: false },
       resolved: { state: "resolved", label: "Returned · received", actionable: true }
@@ -202,7 +194,7 @@
   }
 
   const api = {
-    normalize, trackingState, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
+    normalize, trackingState, repairRecord, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
     findRecordEntry, findRecord, rekeyRecords, claimOutcomeForRecord, buildRecord, badgeForRecord
   };
   root.CarrierTrackingRecords = api;

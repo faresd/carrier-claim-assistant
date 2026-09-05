@@ -1,11 +1,13 @@
 (function initOrderListRules(root) {
   "use strict";
+  const rules = root.CarrierClaimRules || (typeof require === "function" ? require("./carrier-rules.js") : null);
 
   function orderIdFromHref(href) {
     return String(href || "").match(/\/orders-v3\/order\/([0-9]{3}-[0-9]{7}-[0-9]{7})(?:[/?#]|$)/i)?.[1] || "";
   }
 
   function auditIsTerminalDelivered(audit) {
+    if (rules.repairAudit(audit) !== audit) return false;
     const recommendation = audit?.recommendation;
     return recommendation?.recommended === false &&
       recommendation?.reason === "delivered_missing" &&
@@ -13,6 +15,7 @@
   }
 
   function auditIsFresh(audit, maximumAgeHours = 12, now = Date.now()) {
+    if (rules.repairAudit(audit) !== audit) return false;
     if (auditIsTerminalDelivered(audit)) return true;
     const checkedAt = new Date(audit?.checkedAt || 0).getTime();
     return Number.isFinite(checkedAt) && checkedAt > 0 && now - checkedAt < Number(maximumAgeHours || 12) * 3600000;
@@ -48,6 +51,8 @@
     }
     if (error) return { state: "review", label: "Needs review", actionable: true };
     if (!recommendation) return { state: "queued", label: "Queued for check", actionable: false };
+    if (recommendation.trackingState === "returned_delivered") return { state: "returned", label: "Returned · confirm receipt", actionable: true };
+    if (recommendation.trackingState === "pickup_ready") return { state: "pickup", label: "Pickup required", actionable: true };
     if (recommendation.recommended) return { state: "recommended", label: "Claim recommended", actionable: true };
     if (recommendation.title === "Marked delivered") return { state: "clear", label: "No claim · Delivered", actionable: true };
     if (recommendation.title === "Carrier not supported") return { state: "unsupported", label: "Unsupported carrier", actionable: true };
