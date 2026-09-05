@@ -47,7 +47,36 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(dist/*.zip)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "Expected exactly one verified extension ZIP." >&2
+            exit 1
+          fi
+          archive="${archives[0]}"
+          # Listing fails on authentication/network errors; those must not be
+          # mistaken for an absent release. Pagination also covers older tags.
+          release_tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')"
+          if printf '%s\n' "$release_tags" | grep -Fx -- "$GITHUB_REF_NAME" > /dev/null; then
+            asset_name="${archive##*/}"
+            asset_names="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            if printf '%s\n' "$asset_names" | grep -Fx -- "$asset_name" > /dev/null; then
+              verification_dir="$(mktemp -d)"
+              gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "$asset_name" --dir "$verification_dir"
+              if ! cmp -s "$archive" "$verification_dir/$asset_name"; then
+                echo "Existing release ZIP differs from the verified build; publish a new version instead of replacing it." >&2
+                exit 1
+              fi
+              echo "Verified extension ZIP is already attached to this release."
+            else
+              gh release upload "$GITHUB_REF_NAME" "$archive" --repo "$GITHUB_REPOSITORY"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$archive" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
 
   chrome-web-store:
     needs: build
