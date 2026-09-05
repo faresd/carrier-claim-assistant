@@ -5,9 +5,61 @@
     return String(value || "")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\u2018\u2019\u02bc]/g, "'")
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
+  }
+
+  function classifyTrackingState(statusText, summaryText = "", currentSummaryText = "") {
+    const current = normalize(statusText);
+    const currentSummary = normalize(currentSummaryText);
+    const all = normalize(`${statusText || ""} ${summaryText || ""} ${currentSummaryText || ""}`);
+    const sender = "(?:l'|son |votre |leur )?expediteur|(?:the )?sender";
+    const returned = new RegExp(`(?:retour(?:ne|nee)?|renvoye|renvoyee|reexpedie).*?(?:a |vers |chez )(?:${sender})|retour expediteur|returned to sender|return to sender|retour de votre envoi`);
+    const futureReturn = /(?:sera|serait|pourra|pourrait|va|doit|devra) (?:etre )?(?:retourne|renvoye)|(?:sans|faute de|a defaut de|en l'absence de) (?:votre )?retrait.*(?:retour|expediteur)|passe ce delai.*(?:retour|expediteur)|will be returned/;
+    const returnEvidence = (value) => value.split(/[.!?·\n]+/).some((part) => returned.test(part) && !futureReturn.test(part));
+    const negativeDelivery = /non (?:livre|distribue)|pas (?:livre|distribue)|jamais (?:livre|distribue)|n'a pas (?:ete|pu)|n'a pas pu.*remis|n'avons pu.*remettre|impossible de livrer|echec de livraison|tentative de livraison|not delivered|will be delivered/;
+    const isDelivered = (value) => /(?:^|\b)(?:a (?:bien )?ete|est) (?:livre|distribue)\b|livraison (?:a ete )?effectuee|remis (?:au destinataire|a (?:son |l')expediteur)|^livre\b|\bdelivered\b/.test(value) && !negativeDelivery.test(value);
+    const deliveredToSender = (value) => value.split(/[.!?·\n]+/).some((part) => isDelivered(part) && new RegExp(`(?:livre|distribue|remis|delivered).*?(?:a |chez |to )(?:${sender})`).test(part));
+    const unavailablePickup = /(?:sera|serait|va etre|bientot) (?:mis(?:e)? a disposition|disponible)|vous attendra|(?:pas|plus|non) disponible|n'est pas.*disposition/;
+    const senderPickup = (value) => !futureReturn.test(value) && !unavailablePickup.test(value) && /(?:mis(?:e)? a disposition|disponible) (?:de|pour) (?:l'|son |votre |leur )expediteur|en attente de retrait (?:par|pour) (?:l'|son |votre |leur )expediteur|expediteur.*(?:doit retirer|doit recuperer|a retirer|en attente de retrait)|sender.*(?:awaiting collection|ready for pickup)|available for (?:the )?sender/.test(value);
+    const recipientPickup = /(?:pour |par |au |du |de la part du )(?:le |son |votre )?destinataire|recipient.*(?:pickup|collection)|(?:pickup|collection).*recipient/.test(current);
+    const pickup = (value) => !unavailablePickup.test(value) && /(?:disponible|vous attend|a retirer|en attente de retrait|mis(?:e)? a disposition).*(?:point de retrait|bureau de poste|agence|relais|site de retrait)|(?:point de retrait|bureau de poste|agence|relais).*(?:disponible|vous attend|a retirer|retrait)/.test(value);
+    const lost = /perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/;
+    const damaged = /endommage|deteriore|avarie|damaged|damage/;
+    const returnBanner = /^(?:retour(?:ne|nee)? (?:a (?:l'|son )|vers (?:l'|son ))expediteur|retour expediteur|return(?:ed)? to sender)[.! ]*$/.test(current);
+
+    if (deliveredToSender(current)) return "returned_delivered";
+    if (lost.test(current)) return "lost";
+    if (damaged.test(current)) return "damaged";
+    // A current summary is the carrier's status card, not its older event history.
+    if (!recipientPickup && deliveredToSender(currentSummary)) return "returned_delivered";
+    if (returnBanner && deliveredToSender(all)) return "returned_delivered";
+    if (!recipientPickup && (senderPickup(current) || senderPickup(currentSummary))) return "pickup_ready";
+    if (isDelivered(current)) return "delivered";
+    if (recipientPickup) return "unknown";
+    if ((returnEvidence(all) || /\b(?:envoi|colis|parcel) retourne\b|returned parcel/.test(current)) &&
+        (pickup(current) || (returnBanner && pickup(currentSummary)))) return "pickup_ready";
+    if (returnEvidence(current) || returnEvidence(currentSummary) || returnEvidence(all)) return "returning";
+    if (lost.test(all)) return "lost";
+    if (damaged.test(all)) return "damaged";
+    if (/acheminement|en transit|in transit|pris en charge|en cours de livraison|distribution|douane|customs/.test(all)) return "in_transit";
+    return "unknown";
+  }
+
+  function resultTrackingState(result = {}, recommendation = {}) {
+    return classifyTrackingState(result.statusText || recommendation.statusText,
+      result.summaryText || result.statusSummary, result.currentSummaryText || result.statusCurrentSummary);
+  }
+
+  function repairAudit(audit) {
+    if (!audit || !isTerminalDeliveredRecommendation(audit.recommendation)) return audit;
+    const detected = resultTrackingState(audit.result, audit.recommendation);
+    if (!["returning", "pickup_ready", "returned_delivered"].includes(detected)) return audit;
+    return { ...audit, recommendation: recommendClaim(audit.order || {}, {
+      ...(audit.result || {}), statusText: audit.result?.statusText || audit.recommendation.statusText
+    }) };
   }
 
   function carrierFromTrackingNumber(value) {
@@ -147,18 +199,17 @@
   function recommendClaim(order, result, settings = {}) {
     const carrier = detectCarrier(order);
     const statusText = String(result?.statusText || result?.summaryText || "").trim();
-    const currentStatus = normalize(statusText);
     const status = normalize(`${statusText} ${result?.summaryText || ""}`);
+    const trackingState = resultTrackingState(result);
     const shipmentAge = ageInDays(order);
     const overdue = overdueDays(order);
     const eventAge = statusAgeHours(result);
     const chronopostStaleHours = Number(settings.chronopostStaleHours || 48);
     const laposteOverdueDays = Number(settings.laposteOverdueDays || 7);
-    const delivered = /(?:^|\b)(?:a (?:bien )?ete|est) livre\b|livraison (?:a ete )?effectuee|remis au destinataire|^livre\b|\bdelivered\b/.test(currentStatus) &&
-      !/non livre|pas livre|jamais livre|impossible de livrer|n'a pas pu.*remis|n'avons pu.*remettre|echec de livraison|tentative de livraison/.test(currentStatus);
 
     const base = {
       carrier,
+      trackingState,
       statusText: statusText || "No readable carrier status was returned.",
       shipmentAgeDays: shipmentAge,
       overdueDays: overdue,
@@ -172,16 +223,22 @@
 
     if (!carrier.supported) return { ...base, severity: "warning", title: "Carrier not supported", explanation: "Review this carrier manually." };
     if (result?.error) return { ...base, severity: "warning", title: "Status check needs review", explanation: result.error };
-    if (/endommage|deteriore|avarie|damaged|damage/.test(status)) {
+    if (trackingState === "returned_delivered") {
+      return { ...base, reason: "returned", title: "Returned · confirm receipt", explanation: "The carrier reports delivery back to the sender. Confirm physical receipt in the return monitor before resolving this order." };
+    }
+    if (trackingState === "pickup_ready") {
+      return { ...base, severity: "high", reason: "returned", title: "Pickup required", explanation: "The returned parcel is waiting for sender collection. Collect it and confirm receipt in the return monitor." };
+    }
+    if (trackingState === "damaged") {
       return { ...base, recommended: true, severity: "high", reason: "damaged", title: "Damage claim recommended", explanation: "The carrier status indicates damage or an operational incident." };
     }
-    if (/perdu|introuvable|egare|lost|missing|recherche infructueuse/.test(status)) {
+    if (trackingState === "lost") {
       return { ...base, recommended: true, severity: "high", reason: "lost", title: "Loss claim recommended", explanation: "The carrier cannot locate the parcel." };
     }
-    if (/retour a l'expediteur|retour expediteur|returned to sender|renvoye a l'expediteur/.test(status)) {
+    if (trackingState === "returning") {
       return { ...base, recommended: true, severity: "high", reason: "returned", title: "Return claim recommended", explanation: "The carrier status indicates a return to sender." };
     }
-    if (delivered) {
+    if (trackingState === "delivered") {
       return {
         ...base,
         reason: "delivered_missing",
@@ -235,6 +292,9 @@
 
   const api = {
     normalize,
+    classifyTrackingState,
+    resultTrackingState,
+    repairAudit,
     carrierFromTrackingNumber,
     detectCarrier,
     parseAmazonDate,

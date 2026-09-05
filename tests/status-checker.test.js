@@ -131,4 +131,29 @@ test("reads a La Poste status and French date from an open shadow root", async (
   assert.equal(chronopostResult.statusText, "Livraison effectuée");
   assert.equal(chronopostResult.eventDate, "2026-08-20T10:50:00.000Z");
   assert.equal(checker.extractEventDate("20/01/2026 à 12:50"), "2026-01-20T11:50:00.000Z");
+
+  const returnedTrackingNumber = "CC113610754FR";
+  const returnedText = [
+    "Votre suivi", `N° ${returnedTrackingNumber}`, "Enregistrer", "Retour à l’expéditeur",
+    "Votre Colissimo a été livré", "à son expéditeur",
+    "Vendredi 28 août 2026 à 11h40 (Heure France métropolitaine)",
+    "Votre colis est livré.", "France",
+    "Vendredi 28 août 2026 à 7h25 (Heure France métropolitaine)",
+    "Votre Colissimo est en cours de traitement sur le site de tri local."
+  ].join("\n");
+  global.document = {
+    body: { innerText: returnedText, textContent: returnedText },
+    querySelectorAll(selector) {
+      if (selector === "main" || selector.includes("tracking-detail")) return [{ innerText: returnedText, textContent: returnedText }];
+      return [];
+    },
+    querySelector() { return null; }
+  };
+  const returnedResult = checker.parseStatus("laposte", returnedTrackingNumber);
+  const records = require("../src/shared/tracking-records.js");
+  assert.equal(returnedResult.hasResult, true);
+  assert.equal(returnedResult.statusText, "Votre Colissimo a été livré à son expéditeur");
+  assert.equal(returnedResult.currentSummaryText, "Retour à l’expéditeur · Votre Colissimo a été livré · à son expéditeur");
+  assert.doesNotMatch(returnedResult.currentSummaryText, /site de tri|Vendredi/);
+  assert.equal(records.trackingState(returnedResult), "returned_delivered");
 });

@@ -80,6 +80,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .state--pickup_ready { background: #fff0e6; color: var(--orange); }
 .state--returning { background: #fff7dd; color: #936000; }
+.state--returned_delivered { background: #e8eaff; color: #3a4382; }
 .state--lost, .state--damaged { background: #fdecee; color: var(--red); }
 .state--resolved, .state--delivered { background: #e9f6ef; color: var(--green); }
 .api-source { display: block; margin-top: 5px; color: var(--blue-dark); font-size: 10px; font-weight: 750; }

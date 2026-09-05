@@ -23,6 +23,7 @@ The scheduled trigger runs every fifteen minutes, but the monitor creates one da
 | --- | --- | --- |
 | `in_transit` | Normal outbound movement | Continue daily monitoring |
 | `returning` | Carrier has started return-to-sender | Show in Returned tab |
+| `returned_delivered` | Carrier reports delivery back to sender; physical receipt not yet confirmed | Keep in Returned, continue monitoring, offer Confirm received |
 | `pickup_ready` | Returned parcel is waiting for sender pickup | Urgent browser notification and badge, repeated daily until resolved |
 | `lost` / `damaged` | Investigation or claim candidate | Show in Lost tab |
 | `delivered` | Outbound shipment completed | Stop checking |
@@ -31,6 +32,8 @@ The scheduled trigger runs every fifteen minutes, but the monitor creates one da
 Classification is deterministic. AI is deliberately not required for alerts or claims. If the optional `OPENAI_API_KEY` Worker secret is configured, the queue asks the OpenAI Responses API to explain only messages that remain `unknown`; the result is stored as a clearly labelled human-review note in the carrier summary. The AI suggestion never changes the tracking state, triggers a notification, or submits a claim. Carrier text is sent without recipient/address/order details and is treated as untrusted data.
 
 Only an authenticated dashboard administrator can mark an order resolved or reopen it. Browser uploads may enrich tracking and claim data, but cannot create a resolved state or reinstate one after an administrator reopens the case.
+
+The extension and server share one deterministic classifier. Current shipment summaries are saved separately from historical events: a generic delivery event accompanied by a current “delivered to sender” message is a return, not customer delivery. Existing records are reclassified once from their saved evidence without inventing new check timestamps or marking physical receipt. Ordinary delivered records remain cached; manual receipt always remains authoritative.
 
 ## One-time deployment
 

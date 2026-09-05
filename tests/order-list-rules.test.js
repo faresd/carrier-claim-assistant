@@ -1,8 +1,24 @@
 "use strict";
 
+const returnRules = require("../src/shared/carrier-rules.js");
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { orderIdFromHref, auditIsTerminalDelivered, auditIsFresh, formatStatusTimestamp, badgeFor } = require("../src/shared/order-list-rules.js");
+
+test("invalidates a falsely delivered cached return even when checked recently", () => {
+  const now = Date.parse("2026-09-06T10:00:00Z");
+  const audit = {
+    checkedAt: "2026-09-06T09:59:00Z",
+    order: { carrier: "Colissimo", trackingNumber: "CC113610754FR" },
+    result: { statusText: "Votre Colissimo a été livré à son expéditeur." },
+    recommendation: { recommended: false, reason: "delivered_missing", title: "Marked delivered" }
+  };
+  assert.equal(auditIsTerminalDelivered(audit), false);
+  assert.equal(auditIsFresh(audit, 12, now), false);
+  assert.equal(badgeFor({ recommendation: returnRules.repairAudit(audit).recommendation }).label, "Returned · confirm receipt");
+  assert.equal(badgeFor({ recommendation: { trackingState: "pickup_ready" } }).label, "Pickup required");
+});
 
 test("extracts only canonical Amazon order-detail IDs", () => {
   assert.equal(orderIdFromHref("https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333"), "111-2222222-3333333");

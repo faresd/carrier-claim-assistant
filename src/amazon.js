@@ -224,7 +224,7 @@
   }
 
   function trimAuditCache(audits) {
-    const entries = Object.entries(audits || {});
+    const entries = Object.entries(audits || {}).map(([key, audit]) => [key, rules.repairAudit(audit)]);
     const deliveredEntries = entries.filter(([, audit]) => rules.isTerminalDeliveredRecommendation(audit?.recommendation));
     const recentEntries = entries
       .filter(([, audit]) => !rules.isTerminalDeliveredRecommendation(audit?.recommendation))
@@ -237,7 +237,13 @@
     if (!order.orderId || !order.trackingNumber) return null;
     const stored = await chrome.storage.local.get("orderAuditResultsByOrder");
     const audits = stored.orderAuditResultsByOrder || {};
-    const audit = audits[trackingRecords.recordKey(order)] || audits[order.orderId] || null;
+    const key = audits[trackingRecords.recordKey(order)] ? trackingRecords.recordKey(order) : order.orderId;
+    const original = audits[key] || null;
+    const audit = rules.repairAudit(original);
+    if (audit !== original) {
+      audits[key] = audit;
+      await chrome.storage.local.set({ orderAuditResultsByOrder: audits });
+    }
     if (audit?.order?.trackingNumber !== order.trackingNumber) return null;
     const auditedCarrierId = audit?.result?.carrier || audit?.recommendation?.carrier?.id || "";
     if (auditedCarrierId && auditedCarrierId !== carrier.id) return null;

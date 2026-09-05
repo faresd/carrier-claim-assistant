@@ -1,9 +1,10 @@
 import { beginDashboardLogin, dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./auth.mjs";
-
+import "../../src/shared/carrier-rules.js";
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
-const TRACKING_STATES = new Set(["unknown", "in_transit", "returning", "pickup_ready", "lost", "damaged", "delivered", "resolved"]);
+const TRACKING_STATES = new Set(["unknown", "in_transit", "returning", "returned_delivered", "pickup_ready", "lost", "damaged", "delivered", "resolved"]);
+const TRACKING_CLASSIFIER_VERSION = 1;
 const CLAIM_REASONS = new Set(["lost", "returned", "delayed", "damaged", "delivered_missing", "contents_missing", "other"]);
 const CLAIM_STATUSES = new Set(["none", "requested", "sent"]);
 const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
@@ -26,34 +27,14 @@ export function normalize(value) {
   return String(value || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
 
-export function classifyTrackingState(statusText, summaryText = "") {
-  const current = normalize(statusText);
-  const all = normalize(`${statusText || ""} ${summaryText || ""}`);
-  const returnPattern = /retour(?:ne|nee|ne)?(?:\s+|.*\s)a l'expediteur|retour expediteur|renvoye a l'expediteur|returned to sender|return to sender|retour de votre envoi/;
-  const futureReturnPattern = /(?:sera|serait|pourra|pourrait|va|doit|devra) (?:etre )?(?:retourne|renvoye) a l'expediteur|(?:sans|faute de|a defaut de|en l'absence de) (?:votre )?retrait.*(?:retour|expediteur)|passe ce delai.*(?:retour|expediteur)/;
-  const returnContext = (returnPattern.test(current) && !futureReturnPattern.test(current)) ||
-    (returnPattern.test(all) && !futureReturnPattern.test(all));
-  const senderPickup = /mis(?:e)? a disposition de l'expediteur|disponible pour l'expediteur|expediteur.*(?:retirer|retrait|disponible)|retour.*(?:a retirer|disponible|point de retrait|bureau de poste|agence)/.test(current);
-  const pickup = /(?:disponible|vous attend|a retirer|en attente de retrait|mis(?:e)? a disposition).*(?:point de retrait|bureau de poste|agence|relais|site de retrait)|(?:point de retrait|bureau de poste|agence|relais).*(?:disponible|vous attend|a retirer|retrait)/.test(current);
-  const lostPattern = /perdu|introuvable|egare|lost|missing|recherche infructueuse|ne peut (?:plus )?etre localise/;
-  const damagedPattern = /endommage|deteriore|avarie|damaged|damage/;
-  const delivered = /(?:^|\b)(?:a (?:bien )?ete|est) livre\b|livraison (?:a ete )?effectuee|remis au destinataire|^livre\b|\bdelivered\b/.test(current) &&
-    !/non livre|pas livre|jamais livre|impossible de livrer|n'a pas pu.*remis|n'avons pu.*remettre|echec de livraison|tentative de livraison/.test(current);
-
-  if (senderPickup || (returnContext && pickup)) return "pickup_ready";
-  if (delivered) return "delivered";
-  if (lostPattern.test(current)) return "lost";
-  if (damagedPattern.test(current)) return "damaged";
-  if (returnContext) return "returning";
-  if (lostPattern.test(all)) return "lost";
-  if (damagedPattern.test(all)) return "damaged";
-  if (/acheminement|en transit|in transit|pris en charge|en cours de livraison|distribution|douane|customs/.test(all)) return "in_transit";
-  return "unknown";
+export function classifyTrackingState(statusText, summaryText = "", currentSummaryText = "") {
+  return globalThis.CarrierClaimRules.classifyTrackingState(statusText, summaryText, currentSummaryText);
 }
 
 function clean(value, maximum = 1000) {
@@ -211,6 +192,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
   const marketplaceId = clean(input.marketplaceId || "A13V1IB3VIYZZH", 180);
   const requestedTrackingState = clean(input.trackingState || "unknown", 30);
   const trackingState = requestedTrackingState === "resolved" ? "unknown" : requestedTrackingState;
+  const detectedState = classifyTrackingState(input.statusText, input.statusSummary, input.statusCurrentSummary);
   const claimReason = clean(input.claimReason || "none", 50);
   const claimStatus = clean(input.claimStatus || "none", 30);
   return {
@@ -234,9 +216,10 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     recipientCity: clean(input.recipientCity, 120),
     recipientPostalCode: clean(input.recipientPostalCode, 30),
     recipientCountry: clean(input.recipientCountry, 100),
-    trackingState: TRACKING_STATES.has(trackingState) ? trackingState : "unknown",
+    trackingState: detectedState !== "unknown" ? detectedState : TRACKING_STATES.has(trackingState) ? trackingState : "unknown",
     statusText: clean(input.statusText, 1000),
     statusSummary: clean(input.statusSummary, 5000),
+    statusCurrentSummary: clean(input.statusCurrentSummary, 1500),
     checkedAt: clean(input.checkedAt, 40),
     trackingSource: clean(input.trackingSource, 80),
     claimRecommended: input.claimRecommended ? 1 : 0,
@@ -286,6 +269,7 @@ export async function upsertOrder(db, input) {
       migratedFallbackAccount = fallback.account_id;
     }
   }
+  await repairStoredTrackingStates(db, order.recordId);
   const existingPayload = await db.prepare("SELECT claim_payload FROM orders WHERE record_id = ?").bind(order.recordId).first();
   order.claimPayload = mergeClaimPayloadJson(existingPayload?.claim_payload, order.claimPayload);
   await db.prepare(`
@@ -294,8 +278,8 @@ export async function upsertOrder(db, input) {
       product_name, recipient_name, recipient_address1, recipient_address2, recipient_city,
       recipient_postal_code, recipient_country, tracking_state, status_text, status_summary, checked_at, tracking_source,
       claim_recommended, claim_reason, claim_title, claim_status, claim_reference, claim_submitted_at, claim_payload,
-      pickup_notified_at, resolved_at, resolution_note, first_seen_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      pickup_notified_at, resolved_at, resolution_note, first_seen_at, updated_at, status_current_summary, tracking_classifier_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(record_id) DO UPDATE SET
       account_id = excluded.account_id,
       account_name = CASE WHEN excluded.account_name != '' THEN excluded.account_name ELSE orders.account_name END,
@@ -317,6 +301,7 @@ export async function upsertOrder(db, input) {
       recipient_country = CASE WHEN excluded.recipient_country != '' THEN excluded.recipient_country ELSE orders.recipient_country END,
       tracking_state = CASE
         WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.tracking_state
+        WHEN orders.tracking_state = 'returned_delivered' AND excluded.tracking_state = 'delivered' THEN orders.tracking_state
         WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.tracking_state
         WHEN excluded.tracking_state = 'unknown' AND orders.tracking_state != 'unknown' THEN orders.tracking_state
         ELSE excluded.tracking_state
@@ -332,6 +317,12 @@ export async function upsertOrder(db, input) {
         WHEN excluded.status_summary = '' THEN orders.status_summary
         WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.status_summary
         ELSE excluded.status_summary
+      END,
+      status_current_summary = CASE
+        WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.status_current_summary
+        WHEN orders.checked_at != '' AND (excluded.checked_at = '' OR excluded.checked_at < orders.checked_at) THEN orders.status_current_summary
+        WHEN excluded.status_text = '' THEN orders.status_current_summary
+        ELSE excluded.status_current_summary
       END,
       checked_at = CASE
         WHEN orders.tracking_state IN ('delivered', 'resolved') THEN orders.checked_at
@@ -350,7 +341,8 @@ export async function upsertOrder(db, input) {
       pickup_notified_at = CASE WHEN excluded.pickup_notified_at != '' THEN excluded.pickup_notified_at ELSE orders.pickup_notified_at END,
       resolved_at = CASE WHEN excluded.resolved_at != '' THEN excluded.resolved_at ELSE orders.resolved_at END,
       resolution_note = CASE WHEN excluded.resolution_note != '' THEN excluded.resolution_note ELSE orders.resolution_note END,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      tracking_classifier_version = excluded.tracking_classifier_version
   `).bind(
     order.recordId, order.accountId, order.accountName, order.marketplaceId, order.orderId,
     order.trackingNumber, order.carrierId, order.carrierLabel, order.amazonUrl, order.orderDate, order.shipDate,
@@ -358,7 +350,8 @@ export async function upsertOrder(db, input) {
     order.recipientAddress2, order.recipientCity, order.recipientPostalCode, order.recipientCountry,
     order.trackingState, order.statusText, order.statusSummary, order.checkedAt, order.trackingSource, order.claimRecommended,
     order.claimReason, order.claimTitle, order.claimStatus, order.claimReference, order.claimSubmittedAt, order.claimPayload,
-    order.pickupNotifiedAt, order.resolvedAt, order.resolutionNote, order.firstSeenAt, order.updatedAt
+    order.pickupNotifiedAt, order.resolvedAt, order.resolutionNote, order.firstSeenAt, order.updatedAt,
+    order.statusCurrentSummary, TRACKING_CLASSIFIER_VERSION
   ).run();
   await db.prepare(`INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at)
     VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, marketplace_id) DO UPDATE SET account_name = excluded.account_name, updated_at = excluded.updated_at`)
@@ -376,13 +369,38 @@ function rowToOrder(row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]));
 }
 
+// Repair legacy misclassifications from their saved evidence, never invent a new
+// check time or physical receipt. Compare the evidence again in SQL so an
+// in-flight carrier check or manual resolution cannot be overwritten.
+export async function repairStoredTrackingStates(db, recordId = "") {
+  const rows = (await db.prepare(`SELECT record_id, tracking_state, status_text, status_summary, status_current_summary
+    FROM orders WHERE tracking_classifier_version < ? ${recordId ? "AND record_id = ?" : ""} LIMIT 200`)
+    .bind(TRACKING_CLASSIFIER_VERSION, ...(recordId ? [recordId] : [])).all()).results || [];
+  const statements = rows.map((row) => {
+    const detected = classifyTrackingState(row.status_text, row.status_summary, row.status_current_summary);
+    const canRepair = row.tracking_state !== "resolved" && detected !== "unknown" &&
+      (row.tracking_state !== "delivered" || ["returning", "pickup_ready", "returned_delivered"].includes(detected));
+    return db.prepare(`UPDATE orders SET tracking_state = ?, tracking_classifier_version = ?
+      WHERE record_id = ? AND tracking_state = ? AND status_text = ? AND status_summary = ? AND status_current_summary = ?
+      AND tracking_classifier_version < ?`).bind(canRepair ? detected : row.tracking_state, TRACKING_CLASSIFIER_VERSION,
+      row.record_id, row.tracking_state, row.status_text, row.status_summary, row.status_current_summary, TRACKING_CLASSIFIER_VERSION);
+  });
+  if (statements.length) await db.batch(statements);
+  return rows.length;
+}
+
+async function repairAllStoredTrackingStates(db) {
+  while (await repairStoredTrackingStates(db) === 200) { /* indexed, bounded batches */ }
+}
+
 async function listOrders(db, url, deviceId = "master") {
+  await repairAllStoredTrackingStates(db);
   const view = url.searchParams.get("view") || "all";
   const alerts = url.searchParams.get("alerts") === "1";
   const clauses = [];
   const values = [];
   if (view === "lost") clauses.push("tracking_state IN ('lost', 'damaged')");
-  if (view === "returned") clauses.push("tracking_state IN ('returning', 'pickup_ready')");
+  if (view === "returned") clauses.push("tracking_state IN ('returning', 'pickup_ready', 'returned_delivered')");
   if (view === "resolved") clauses.push("tracking_state = 'resolved'");
   if (view === "active") clauses.push("tracking_state NOT IN ('delivered', 'resolved')");
   if (alerts) {
@@ -439,7 +457,7 @@ export async function dashboardOrderSummary(db, url) {
       pickup: states.pickup_ready || 0,
       returning: states.returning || 0,
       lost: (states.lost || 0) + (states.damaged || 0),
-      returned: (states.returning || 0) + (states.pickup_ready || 0),
+      returned: (states.returning || 0) + (states.pickup_ready || 0) + (states.returned_delivered || 0),
       resolved: states.resolved || 0
     },
     accounts: (accountResult.results || []).map((row) => ({
@@ -508,13 +526,15 @@ export function normalizeCarrierPayload(payload) {
   const latest = sorted[0] || shipment;
   const messages = sorted.map(eventMessage).filter(Boolean);
   const statusText = eventMessage(latest) || clean(shipment?.message || payload?.message, 1000);
-  const statusSummary = messages.join(" · ").slice(0, 5000) || statusText;
+  const statusCurrentSummary = clean(shipment?.message || payload?.message, 1500);
+  const statusSummary = [...new Set([statusCurrentSummary, ...messages].filter(Boolean))].join(" · ").slice(0, 5000) || statusText;
   return {
     statusText,
     statusSummary,
+    statusCurrentSummary,
     eventAt: eventDate(latest),
     rawCode: clean(latest?.code || latest?.status || shipment?.status || payload?.status, 80),
-    trackingState: classifyTrackingState(statusText, statusSummary)
+    trackingState: classifyTrackingState(statusText, statusSummary, statusCurrentSummary)
   };
 }
 
@@ -737,27 +757,38 @@ export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
 }
 
 export async function enqueueDailyMonitor(env, date = new Date()) {
+  await repairAllStoredTrackingStates(env.DB);
   const parts = parisDateParts(date);
   const runDate = `${parts.year}-${parts.month}-${parts.day}`;
   const existing = await env.DB.prepare("SELECT * FROM monitor_runs WHERE run_date = ?").bind(runDate).first();
   if (existing?.completed_at) return { skipped: true, reason: "already-run", runDate };
-  if (existing) {
-    const pending = (await env.DB.prepare("SELECT record_id FROM monitor_jobs WHERE run_date = ? AND status = 'queued'").bind(runDate).all()).results || [];
-    await sendMonitorJobs(env, pending, runDate);
-    return { skipped: false, resumed: true, runDate, queuedCount: pending.length };
-  }
   const startedAt = date.toISOString();
-  const rows = (await env.DB.prepare("SELECT record_id FROM orders WHERE tracking_state NOT IN ('delivered', 'resolved') ORDER BY checked_at ASC").all()).results || [];
-  await env.DB.prepare("INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count) VALUES (?, ?, ?, ?)")
-    .bind(runDate, startedAt, rows.length ? "" : startedAt, rows.length).run();
-  for (let index = 0; index < rows.length; index += 100) {
-    const chunk = rows.slice(index, index + 100);
-    await env.DB.batch(chunk.map((row) => env.DB.prepare(`INSERT INTO monitor_jobs
-      (run_date, record_id, status, attempts, created_at, updated_at) VALUES (?, ?, 'queued', 0, ?, ?)`)
-      .bind(runDate, row.record_id, startedAt, startedAt)));
-    await sendMonitorJobs(env, chunk, runDate);
-  }
-  return { skipped: false, runDate, queuedCount: rows.length };
+  // D1 batches are transactional: every eligible job must exist before any
+  // dispatch can fail. INSERT OR IGNORE also repairs a partially seeded run
+  // from an older deployment without resetting dispatched or retrying jobs.
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR IGNORE INTO monitor_runs (run_date, started_at) VALUES (?, ?)")
+      .bind(runDate, startedAt),
+    env.DB.prepare(`INSERT OR IGNORE INTO monitor_jobs
+      (run_date, record_id, status, attempts, created_at, updated_at)
+      SELECT runs.run_date, orders.record_id, 'queued', 0, runs.started_at, ?
+      FROM orders JOIN monitor_runs runs ON runs.run_date = ?
+      WHERE runs.completed_at = '' AND orders.tracking_state NOT IN ('delivered', 'resolved')`)
+      .bind(startedAt, runDate),
+    env.DB.prepare(`UPDATE monitor_runs SET
+      queued_count = (SELECT COUNT(*) FROM monitor_jobs WHERE run_date = ?),
+      completed_at = CASE
+        WHEN processed_count >= (SELECT COUNT(*) FROM monitor_jobs WHERE run_date = ?) THEN ?
+        ELSE completed_at END
+      WHERE run_date = ? AND completed_at = ''`)
+      .bind(runDate, runDate, startedAt, runDate)
+  ]);
+  const pending = (await env.DB.prepare(`SELECT jobs.record_id FROM monitor_jobs jobs
+    JOIN orders ON orders.record_id = jobs.record_id
+    WHERE jobs.run_date = ? AND jobs.status = 'queued' ORDER BY orders.checked_at ASC`)
+    .bind(runDate).all()).results || [];
+  await sendMonitorJobs(env, pending, runDate);
+  return { skipped: false, ...(existing ? { resumed: true } : {}), runDate, queuedCount: pending.length };
 }
 
 async function finishMonitorJob(env, job, { row = null, result = null, error = "" } = {}) {
@@ -767,12 +798,20 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
   if (row && result) {
     const state = row.tracking_state === "resolved"
       ? "resolved"
+      : row.tracking_state === "returned_delivered" && result.trackingState === "delivered"
+        ? "returned_delivered"
       : result.trackingState === "unknown" && row.tracking_state !== "unknown"
         ? row.tracking_state
         : result.trackingState;
     statements.push(
-      env.DB.prepare(`UPDATE orders SET tracking_state = ?, status_text = ?, status_summary = ?, checked_at = ?, tracking_source = ?, updated_at = ? WHERE record_id = ?`)
-        .bind(state, result.statusText, result.statusSummary, now, clean(result.source, 80), now, row.record_id),
+      env.DB.prepare(`UPDATE orders SET tracking_state = CASE
+          WHEN tracking_state = 'resolved' THEN 'resolved'
+          WHEN tracking_state = 'returned_delivered' AND ? = 'delivered' THEN 'returned_delivered'
+          ELSE ? END,
+        status_text = ?, status_summary = ?, status_current_summary = ?, checked_at = ?, tracking_source = ?, updated_at = ?,
+        tracking_classifier_version = ? WHERE record_id = ?`)
+        .bind(state, state, result.statusText, result.statusSummary, clean(result.statusCurrentSummary, 1500), now,
+          clean(result.source, 80), now, TRACKING_CLASSIFIER_VERSION, row.record_id),
       env.DB.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code) VALUES (?, ?, ?, ?, ?, ?)`)
         .bind(row.record_id, state, result.statusText, result.eventAt, now, result.rawCode)
     );
@@ -966,17 +1005,24 @@ async function claimPairingCode(request, env) {
   const attempts = await env.DB.prepare("SELECT attempt_count FROM pairing_attempts WHERE attempt_key = ?").bind(attemptKey).first();
   if (Number(attempts?.attempt_count || 0) > 10) throw new Error("Too many pairing attempts. Wait fifteen minutes and try again.");
   const storedCode = await pairingCodeKey(code, env);
-  const pairing = await env.DB.prepare("SELECT * FROM pairing_codes WHERE code = ? AND used_at = ''")
-    .bind(storedCode).first();
-  if (!pairing || new Date(pairing.expires_at) <= now) throw new Error("Pairing code is invalid or expired.");
   const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
   const deviceId = crypto.randomUUID();
+  const requestedName = clean(body.deviceName, 100);
+  // The conditional insert and code consumption share one D1 transaction.
+  // Concurrent requests cannot both create a device, and a failed transaction
+  // leaves the code available for a retry instead of orphaning an enrollment.
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO devices (id, name, token_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(deviceId, clean(body.deviceName || pairing.device_name, 100), await sha256(token), now.toISOString(), now.toISOString()),
-    env.DB.prepare("UPDATE pairing_codes SET used_at = ? WHERE code = ?").bind(now.toISOString(), pairing.code)
+    env.DB.prepare(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
+      SELECT ?, CASE WHEN ? != '' THEN ? ELSE device_name END, ?, ?, ? FROM pairing_codes
+      WHERE code = ? AND used_at = '' AND expires_at > ?`)
+      .bind(deviceId, requestedName, requestedName, await sha256(token), now.toISOString(), now.toISOString(), storedCode, now.toISOString()),
+    env.DB.prepare(`UPDATE pairing_codes SET used_at = ? WHERE code = ? AND used_at = ''
+      AND EXISTS (SELECT 1 FROM devices WHERE id = ?)`)
+      .bind(now.toISOString(), storedCode, deviceId)
   ]);
-  return { token, deviceId, deviceName: clean(body.deviceName || pairing.device_name, 100) };
+  const device = await env.DB.prepare("SELECT name FROM devices WHERE id = ?").bind(deviceId).first();
+  if (!device) throw new Error("Pairing code is invalid or expired.");
+  return { token, deviceId, deviceName: device.name };
 }
 
 async function api(request, env, url) {

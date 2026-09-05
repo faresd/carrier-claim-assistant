@@ -14,6 +14,7 @@ import monitorWorker, {
   monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
+  repairStoredTrackingStates,
   shouldRunMorningMonitor,
   upsertOrder
 } from "../src/worker.mjs";
@@ -50,6 +51,7 @@ async function monitorDatabase() {
   database.exec(await readFile(new URL("../migrations/0002_resolved_deletion_indexes.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0003_deleted_order_tombstones.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0004_order_tracking_metadata.sql", import.meta.url), "utf8"));
+  database.exec(await readFile(new URL("../migrations/0005_tracking_current_evidence.sql", import.meta.url), "utf8"));
   return { database, db: new D1SqliteAdapter(database) };
 }
 
@@ -158,6 +160,99 @@ test("normalizes a delivered latest event even when older history records a retu
   ] } });
   assert.equal(result.trackingState, "delivered");
   assert.match(result.statusText, /livr/i);
+});
+
+test("keeps the current shipment sender-delivery message separate from generic event history", () => {
+  const result = normalizeCarrierPayload({ shipment: {
+    message: "Votre Colissimo a été livré à son expéditeur",
+    event: [{ date: "2026-08-28T11:40:00Z", label: "Votre colis est livré." }]
+  } });
+  assert.equal(result.trackingState, "returned_delivered");
+  assert.equal(result.statusCurrentSummary, "Votre Colissimo a été livré à son expéditeur");
+  assert.match(result.statusSummary, /son expéditeur/);
+});
+
+test("repairs saved sender-return evidence without changing real delivery, receipt, or check timestamps", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const cases = [
+    ["delivered", "Votre Colissimo a été livré à son expéditeur.", "", "returned_delivered"],
+    ["unknown", "Retour à l’expéditeur", "Votre Colissimo a été livré à son expéditeur", "returned_delivered"],
+    ["unknown", "Votre envoi retourné est disponible au bureau de poste.", "Retour à l’expéditeur", "pickup_ready"],
+    ["delivered", "Votre colis est livré.", "Retour à l’expéditeur", "delivered"],
+    ["resolved", "Votre Colissimo a été livré à son expéditeur.", "", "resolved"]
+  ];
+  for (const [index, [prior, text, summary]] of cases.entries()) {
+    const order = await upsertOrder(db, {
+      orderId: `400-000000${index}-1234567`, trackingNumber: `CC00000000${index}FR`,
+      statusText: text, statusSummary: summary, checkedAt: "2026-08-28T11:40:00Z"
+    });
+    database.prepare("UPDATE orders SET tracking_state = ?, tracking_classifier_version = 0 WHERE record_id = ?")
+      .run(prior, order.recordId);
+  }
+  assert.equal(await repairStoredTrackingStates(db), cases.length);
+  const rows = database.prepare("SELECT tracking_state, checked_at FROM orders ORDER BY order_id").all();
+  assert.deepEqual(rows.map(row => row.tracking_state), cases.map(row => row[3]));
+  assert.ok(rows.every(row => row.checked_at === "2026-08-28T11:40:00Z"));
+  assert.equal(await repairStoredTrackingStates(db), 0);
+  const summary = await dashboardOrderSummary(db, new URL("https://tracking.cheaply.fr/api/orders"));
+  assert.equal(summary.counts.returned, 3);
+  assert.equal(summary.counts.resolved, 1);
+});
+
+test("keeps sender delivery awaiting receipt across stale uploads and later generic delivery events", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = { orderId: "400-0000001-1234567", trackingNumber: "CC000000001FR" };
+  const order = await upsertOrder(db, { ...identity, trackingState: "delivered", statusText: "Votre colis est livré.",
+    statusCurrentSummary: "Votre Colissimo a été livré à son expéditeur", checkedAt: "2026-09-02T08:00:00Z" });
+  await upsertOrder(db, { ...identity, trackingState: "delivered", statusText: "Votre colis est livré.", checkedAt: "2026-09-01T08:00:00Z" });
+  let row = database.prepare("SELECT * FROM orders WHERE record_id = ?").get(order.recordId);
+  assert.equal(row.tracking_state, "returned_delivered");
+  assert.match(row.status_current_summary, /son expéditeur/);
+  const messages = [];
+  const env = { DB: db, LAPOSTE_OKAPI_KEY: "test", TRACKING_QUEUE: { async sendBatch(batch) { messages.push(...batch); } } };
+  await enqueueDailyMonitor(env, new Date("2026-09-03T05:00:00Z"));
+  assert.equal(messages.length, 1, "sender delivery still monitored until seller confirms receipt");
+  await processTrackingMessage({ body: messages[0].body, ack() {}, retry() { assert.fail("No retry expected"); } }, env,
+    { fetchImpl: async () => Response.json({ shipment: { event: [{ label: "Votre colis est livré." }] } }) });
+  row = database.prepare("SELECT * FROM orders WHERE record_id = ?").get(order.recordId);
+  assert.equal(row.tracking_state, "returned_delivered");
+  assert.equal(row.resolved_at, "");
+});
+
+test("an in-flight tracking response cannot undo a manual received confirmation", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const order = await upsertOrder(db, { orderId: "400-1234567-1234567", trackingNumber: "CC000000001FR", trackingState: "returning" });
+  const messages = [];
+  const env = { DB: db, LAPOSTE_OKAPI_KEY: "test", TRACKING_QUEUE: { async sendBatch(batch) { messages.push(...batch); } } };
+  await enqueueDailyMonitor(env, new Date("2026-09-03T05:00:00Z"));
+  await processTrackingMessage({ body: messages[0].body, ack() {}, retry() { assert.fail("No retry expected"); } }, env, {
+    fetchImpl: async () => {
+      database.prepare("UPDATE orders SET tracking_state = 'resolved', resolved_at = '2026-09-03T05:01:00Z' WHERE record_id = ?").run(order.recordId);
+      return Response.json({ shipment: { message: "Votre Colissimo a été livré à son expéditeur" } });
+    }
+  });
+  const row = database.prepare("SELECT tracking_state, resolved_at FROM orders WHERE record_id = ?").get(order.recordId);
+  assert.equal(row.tracking_state, "resolved");
+  assert.equal(row.resolved_at, "2026-09-03T05:01:00Z");
+});
+
+test("a manual morning run repairs every legacy batch before excluding delivered records", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const insert = database.prepare(`INSERT INTO orders
+    (record_id, account_id, order_id, tracking_number, tracking_state, status_text, first_seen_at, updated_at)
+    VALUES (?, 'test-account', ?, ?, 'delivered', 'Votre Colissimo a été livré à son expéditeur.', '2026-09-01', '2026-09-01')`);
+  for (let index = 0; index < 205; index++) {
+    const orderId = `400-${String(index).padStart(7, "0")}-1234567`;
+    insert.run(`test-account||${orderId}`, orderId, `CC${String(index).padStart(9, "0")}FR`);
+  }
+  const queued = [];
+  await enqueueDailyMonitor({ DB: db, TRACKING_QUEUE: { async sendBatch(batch) { queued.push(...batch); } } }, new Date("2026-09-03T05:00:00Z"));
+  assert.equal(queued.length, 205);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders WHERE tracking_state = 'returned_delivered'").get().count, 205);
 });
 
 test("turns a carrier abort into a bounded retryable error", async () => {
