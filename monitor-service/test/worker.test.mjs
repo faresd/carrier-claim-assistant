@@ -1114,3 +1114,46 @@ test("browser uploads cannot resolve or re-resolve an administrator-reopened ord
   assert.equal(row.resolved_at, "");
   assert.equal(row.resolution_note, "");
 });
+
+
+test("keeps dashboard pages and assets private until a valid SSO session exists", async () => {
+  const sessionSecret = "test-session-secret-with-at-least-thirty-two-characters";
+  let assetRequests = 0;
+  const env = {
+    SESSION_SECRET: sessionSecret,
+    ASSETS: {
+      async fetch() {
+        assetRequests += 1;
+        return new Response("private dashboard", { headers: { "content-type": "text/html" } });
+      }
+    }
+  };
+
+  const anonymous = await monitorWorker.fetch(new Request("https://tracking.cheaply.fr/", {
+    headers: { accept: "text/html" }
+  }), env);
+  assert.equal(anonymous.status, 302);
+  const destination = new URL(anonymous.headers.get("location"));
+  assert.equal(destination.origin, "https://auth.cheaply.fr");
+  assert.equal(destination.pathname, "/authorize");
+  assert.equal(destination.searchParams.get("client_id"), "tracking-web");
+  assert.match(anonymous.headers.get("set-cookie"), /^__Host-carrier_monitor_oauth=/);
+  assert.equal(assetRequests, 0);
+
+  const session = await signAuthPayload({
+    sub: "admin:owner@example.com",
+    email: "owner@example.com",
+    role: "admin",
+    name: "Owner",
+    jti: "asset-session",
+    exp: Math.floor(Date.now() / 1000) + 300
+  }, sessionSecret);
+  const authorized = await monitorWorker.fetch(new Request("https://tracking.cheaply.fr/", {
+    headers: { cookie: `__Host-carrier_monitor_session=${session}` }
+  }), env);
+  assert.equal(authorized.status, 200);
+  assert.equal(await authorized.text(), "private dashboard");
+  assert.equal(assetRequests, 1);
+  assert.equal(authorized.headers.get("cache-control"), "no-store");
+  assert.match(authorized.headers.get("content-security-policy"), /default-src 'self'/);
+});

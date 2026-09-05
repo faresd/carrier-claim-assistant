@@ -1,4 +1,5 @@
-import { dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./auth.mjs";
+import { beginDashboardLogin, dashboardAdminAuth, handleDashboardAuth, validDashboardCsrf } from "./auth.mjs";
+
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const TERMINAL_STATES = new Set(["delivered", "resolved"]);
@@ -1110,8 +1111,17 @@ export default {
     }
     if (url.pathname === "/api/health") return monitorHealth(env, request);
     const authResponse = await handleDashboardAuth(request, env, url);
-    if (authResponse) return authResponse;
+    if (authResponse) return authResponse;    
     if (url.pathname.startsWith("/api/")) return api(request, env, url);
+    const dashboardAuth = await dashboardAdminAuth(request, env);
+    if (!dashboardAuth.authorized) {
+      if (!["GET", "HEAD"].includes(request.method)) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      const loginUrl = new URL("/api/auth/login", DASHBOARD_ORIGIN);
+      loginUrl.searchParams.set("return_to", `${url.pathname}${url.search}`);
+      return beginDashboardLogin(new Request(loginUrl, { headers: request.headers }), env);
+    }
     const asset = await env.ASSETS.fetch(request);
     return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers: secureAssetHeaders(asset.headers) });
   },
