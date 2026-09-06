@@ -11,7 +11,8 @@ const DASHBOARD_ORIGIN = "https://tracking.cheaply.fr";
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const REQUIRED_SCHEMA_TABLES = [
   "orders", "seller_accounts", "tracking_events", "monitor_runs", "monitor_jobs",
-  "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts", "deleted_orders"
+  "devices", "pairing_codes", "pairing_attempts", "claim_launches", "notification_receipts", "deleted_orders",
+  "browser_fallback_leases"
 ];
 const CLAIM_URLS = {
   laposte: "https://contact.aide.laposte.fr/kb/guide/fr/formulaire-courrier-colis-55CJ9A5dgN/Steps/4901506",
@@ -428,6 +429,70 @@ async function listOrders(db, url, deviceId = "master") {
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const result = await db.prepare(`SELECT * FROM orders ${where} ORDER BY CASE tracking_state WHEN 'pickup_ready' THEN 0 WHEN 'returning' THEN 1 WHEN 'lost' THEN 2 ELSE 3 END, updated_at DESC LIMIT ? OFFSET ?`).bind(...values, limit, offset).all();
   return (result.results || []).map(rowToOrder);
+}
+
+export async function leaseBrowserFallback(db, deviceId, date = new Date()) {
+  const cleanDeviceId = clean(deviceId, 100);
+  if (!cleanDeviceId) throw new Error("A paired browser is required for carrier-page fallback.");
+  const now = date.toISOString();
+  const leasedUntil = new Date(date.getTime() + 5 * 60000).toISOString();
+  const leaseId = crypto.randomUUID();
+  await db.batch([
+    db.prepare("DELETE FROM browser_fallback_leases WHERE leased_until <= ?").bind(now),
+    db.prepare(`INSERT OR IGNORE INTO browser_fallback_leases
+      (record_id, lease_id, device_id, leased_at, leased_until)
+      SELECT orders.record_id, ?, ?, ?, ?
+      FROM orders JOIN monitor_jobs jobs ON jobs.record_id = orders.record_id
+      WHERE jobs.status = 'failed'
+        AND orders.tracking_state NOT IN ('delivered', 'resolved')
+        AND orders.tracking_number NOT LIKE 'PENDING%'
+        AND (orders.checked_at = '' OR orders.checked_at < jobs.updated_at)
+        AND NOT EXISTS (
+          SELECT 1 FROM monitor_jobs newer
+          WHERE newer.record_id = jobs.record_id AND newer.updated_at > jobs.updated_at
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM browser_fallback_leases active
+          WHERE active.record_id = orders.record_id AND active.leased_until > ?
+        )
+      ORDER BY jobs.updated_at ASC, orders.record_id ASC LIMIT 1`)
+      .bind(leaseId, cleanDeviceId, now, leasedUntil, now)
+  ]);
+  const row = await db.prepare(`SELECT orders.* FROM browser_fallback_leases leases
+    JOIN orders ON orders.record_id = leases.record_id
+    WHERE leases.device_id = ? AND leases.lease_id = ? LIMIT 1`)
+    .bind(cleanDeviceId, leaseId).first();
+  return { order: rowToOrder(row), leaseExpiresAt: row ? leasedUntil : "" };
+}
+
+export async function finishBrowserFallback(db, deviceId, recordId, { error = "", date = new Date() } = {}) {
+  const cleanDeviceId = clean(deviceId, 100);
+  const cleanRecordId = clean(recordId, 500);
+  const lease = await db.prepare(`SELECT record_id, leased_at FROM browser_fallback_leases
+    WHERE record_id = ? AND device_id = ? AND leased_until > ?`)
+    .bind(cleanRecordId, cleanDeviceId, date.toISOString()).first();
+  if (!lease) {
+    const failure = new Error("Browser fallback lease is missing or expired.");
+    failure.status = 409;
+    throw failure;
+  }
+  if (error) {
+    const retryAt = new Date(date.getTime() + 6 * 3600000).toISOString();
+    await db.prepare(`UPDATE browser_fallback_leases SET leased_at = ?, leased_until = ?, last_error = ?
+      WHERE record_id = ? AND device_id = ?`).bind(date.toISOString(), retryAt, clean(error, 500), cleanRecordId, cleanDeviceId).run();
+    return { recordId: cleanRecordId, retryAt };
+  }
+  const refreshed = await db.prepare(`SELECT record_id FROM orders WHERE record_id = ?
+    AND tracking_source LIKE 'carrier-page-%' AND checked_at >= ?`)
+    .bind(cleanRecordId, lease.leased_at).first();
+  if (!refreshed) {
+    const failure = new Error("A fresh carrier-page result must be uploaded before completing the fallback lease.");
+    failure.status = 409;
+    throw failure;
+  }
+  await db.prepare("DELETE FROM browser_fallback_leases WHERE record_id = ? AND device_id = ?")
+    .bind(cleanRecordId, cleanDeviceId).run();
+  return { recordId: cleanRecordId, completed: true };
 }
 
 export async function dashboardOrderSummary(db, url) {
@@ -1087,6 +1152,25 @@ async function api(request, env, url) {
       return json({ ok: true, order }, 200, corsHeaders(request));
     } catch (error) {
       return json({ error: error.message, ...(error.status === 410 ? { deleted: true } : {}) }, error.status || 400, corsHeaders(request));
+    }
+  }
+  if (url.pathname === "/api/browser-fallback/lease" && request.method === "GET") {
+    if (!isExtension) return json({ error: "Paired browser token required" }, 403, corsHeaders(request));
+    return json({ ok: true, ...(await leaseBrowserFallback(env.DB, extensionAuth.deviceId)) }, 200, corsHeaders(request));
+  }
+  const browserFallbackMatch = url.pathname.match(/^\/api\/browser-fallback\/([^/]+)\/(complete|fail)$/);
+  if (browserFallbackMatch && request.method === "POST") {
+    if (!isExtension) return json({ error: "Paired browser token required" }, 403, corsHeaders(request));
+    try {
+      const body = await request.json().catch(() => ({}));
+      return json({ ok: true, ...(await finishBrowserFallback(
+        env.DB,
+        extensionAuth.deviceId,
+        decodeURIComponent(browserFallbackMatch[1]),
+        { error: browserFallbackMatch[2] === "fail" ? body.error || "Carrier page did not return a readable status." : "" }
+      )) }, 200, corsHeaders(request));
+    } catch (error) {
+      return json({ error: error.message }, error.status || 400, corsHeaders(request));
     }
   }
   if (url.pathname === "/api/export" && request.method === "GET") {
