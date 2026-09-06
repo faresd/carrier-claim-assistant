@@ -18,6 +18,38 @@
     return rules.resultTrackingState(result, recommendation);
   }
 
+  function isGenericSellerAccountId(value) {
+    const id = normalize(value);
+    return !id || ["default", "sellercentral.amazon.fr"].includes(id);
+  }
+
+  function isDerivedSellerAccountId(value) {
+    return normalize(value).startsWith("seller-name:");
+  }
+
+  function sellerAccountName(record = {}) {
+    const nested = record.order && typeof record.order === "object" ? record.order : {};
+    return normalize(record.sellerAccountName || record.accountName || nested.sellerAccountName || nested.accountName || "");
+  }
+
+  function sellerAccountSpecificity(value) {
+    return isGenericSellerAccountId(value) ? 0 : isDerivedSellerAccountId(value) ? 1 : 2;
+  }
+
+  function sellerAccountsCanAlias(left = {}, right = {}) {
+    const leftIdentity = identity(left);
+    const rightIdentity = identity(right);
+    if (leftIdentity.marketplaceId !== rightIdentity.marketplaceId) return false;
+    const leftId = leftIdentity.sellerAccountId;
+    const rightId = rightIdentity.sellerAccountId;
+    if (leftId === rightId) return true;
+    if (isGenericSellerAccountId(leftId) || isGenericSellerAccountId(rightId)) return true;
+    if (isDerivedSellerAccountId(leftId) === isDerivedSellerAccountId(rightId)) return false;
+    const leftName = sellerAccountName(left);
+    const rightName = sellerAccountName(right);
+    return Boolean(leftName && rightName && leftName === rightName);
+  }
+
   function repairRecord(record) {
     if (!record || !["delivered", "unknown"].includes(record.trackingState)) return record;
     const detected = trackingState(record);
@@ -90,9 +122,7 @@
     });
     if (exactAccount.length === 1) return { key: exactAccount[0][0], value: exactAccount[0][1] };
     if (candidates.length !== 1) return null;
-    const candidateIdentity = identity(candidates[0][1]);
-    const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
-    return fallbackAccounts.has(wantedIdentity.sellerAccountId) || fallbackAccounts.has(candidateIdentity.sellerAccountId)
+    return sellerAccountsCanAlias(wanted, candidates[0][1])
       ? { key: candidates[0][0], value: candidates[0][1] }
       : null;
   }
@@ -194,7 +224,8 @@
   }
 
   const api = {
-    normalize, trackingState, repairRecord, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
+    normalize, trackingState, isGenericSellerAccountId, isDerivedSellerAccountId, sellerAccountSpecificity,
+    sellerAccountsCanAlias, repairRecord, isTerminal, monitorEligible, cleanOrder, identity, recordKey,
     findRecordEntry, findRecord, rekeyRecords, claimOutcomeForRecord, buildRecord, badgeForRecord
   };
   root.CarrierTrackingRecords = api;
