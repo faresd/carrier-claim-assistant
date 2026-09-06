@@ -9,6 +9,9 @@ const CLAIM_OUTCOMES_KEY = "claimOutcomesByOrder";
 const TRACKED_ORDERS_KEY = "trackedOrdersByOrder";
 const ORDER_AUDITS_KEY = "orderAuditResultsByOrder";
 const MONITOR_ALERT_ALARM = "carrierReturnMonitorAlerts";
+const BROWSER_FALLBACK_ALARM = "carrierBrowserTrackingFallback";
+const BROWSER_FALLBACK_NEXT_ALARM = "carrierBrowserTrackingFallbackNext";
+const BROWSER_FALLBACK_TAB_KEY = "carrierBrowserTrackingFallbackTab";
 const MONITOR_ORIGIN = "https://tracking.cheaply.fr";
 
 const CLAIM_URLS = {
@@ -113,6 +116,7 @@ chrome.runtime.onStartup?.addListener(() => {
 
 async function scheduleMonitorAlertPolling() {
   await chrome.alarms.create(MONITOR_ALERT_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
+  await chrome.alarms.create(BROWSER_FALLBACK_ALARM, { delayInMinutes: 3, periodInMinutes: 15 });
 }
 
 function normalizedMonitorConfig(settings = {}) {
@@ -452,6 +456,68 @@ async function refreshMonitorAlerts() {
   return { ok: true, count: (payload.orders || []).length };
 }
 
+function orderFromBrowserFallback(record = {}) {
+  return {
+    sourceUrl: record.amazonUrl || "",
+    orderId: record.orderId || "",
+    trackingNumber: record.trackingNumber || "",
+    orderDate: record.orderDate || "",
+    shipDate: record.shipDate || "",
+    deliverBy: record.deliverBy || "",
+    carrier: record.carrierLabel || record.carrierId || "",
+    itemValue: record.itemValue || "",
+    productName: record.productName || "",
+    recipientName: record.recipientName || "",
+    recipientAddress1: record.recipientAddress1 || "",
+    recipientAddress2: record.recipientAddress2 || "",
+    recipientCity: record.recipientCity || "",
+    recipientPostalCode: record.recipientPostalCode || "",
+    recipientCountry: record.recipientCountry || "",
+    sellerAccountId: record.accountId || record.sellerAccountId || "",
+    sellerAccountName: record.accountName || record.sellerAccountName || "",
+    marketplaceId: record.marketplaceId || ""
+  };
+}
+
+async function reportBrowserFallbackFailure(request, error) {
+  if (!request?.browserFallbackRecordId) return;
+  await monitorRequest(`/api/browser-fallback/${encodeURIComponent(request.browserFallbackRecordId)}/fail`, {
+    method: "POST",
+    body: JSON.stringify({ error: String(error || "Carrier page did not return a readable status.").slice(0, 500) })
+  }).catch(() => {});
+  await chrome.alarms.create(BROWSER_FALLBACK_NEXT_ALARM, { delayInMinutes: 0.5 });
+}
+
+let browserFallbackRunning = false;
+async function runBrowserTrackingFallback() {
+  if (browserFallbackRunning) return { ok: true, skipped: true, reason: "already-running" };
+  browserFallbackRunning = true;
+  try {
+    const config = await monitorConfig();
+    if (!config.enabled) return { ok: true, skipped: true, reason: "not-paired" };
+    const lease = await monitorRequest("/api/browser-fallback/lease");
+    if (!lease.order) return { ok: true, skipped: true, reason: "no-failed-api-checks" };
+    const order = orderFromBrowserFallback(lease.order);
+    const carrier = carrierRules.detectCarrier({
+      ...order,
+      carrier: lease.order.carrierLabel || lease.order.carrierId || order.carrier
+    });
+    if (!carrier.supported) {
+      await reportBrowserFallbackFailure({ browserFallbackRecordId: lease.order.recordId }, `Unsupported carrier: ${carrier.label}`);
+      return { ok: false, error: `Unsupported carrier: ${carrier.label}` };
+    }
+    const stored = await chrome.storage.session.get(BROWSER_FALLBACK_TAB_KEY);
+    return startStatusCheck({
+      carrier: carrier.id,
+      order,
+      browserFallbackRecordId: lease.order.recordId,
+      reusableCheckerTabId: stored[BROWSER_FALLBACK_TAB_KEY] ?? null
+    }, {});
+  } finally {
+    browserFallbackRunning = false;
+  }
+}
+
 async function pairMonitorDevice({ serverUrl, code, deviceName }) {
   const config = normalizedMonitorConfig({ cloudSyncEnabled: true, monitorServerUrl: serverUrl, monitorAccessToken: "temporary" });
   if (!config.serverUrl || !/^\d{6}$/.test(String(code || "").trim())) throw new Error("Enter the server URL and six-digit pairing code.");
@@ -499,8 +565,9 @@ async function redeemCloudClaimLaunch(token) {
 }
 
 async function startStatusCheck(message, sender) {
-  const { carrier, order, auditId, auditWorkerTabId } = message;
-  if (!TRACKING_URLS[carrier] || !order?.trackingNumber || !sender.tab?.id) {
+  const { carrier, order, auditId, auditWorkerTabId, browserFallbackRecordId, reusableCheckerTabId } = message;
+  const sourceTabId = sender.tab?.id ?? null;
+  if (!TRACKING_URLS[carrier] || !order?.trackingNumber || (sourceTabId == null && !browserFallbackRecordId)) {
     return { ok: false, error: "Missing supported carrier, tracking number, or Amazon tab." };
   }
 
@@ -509,9 +576,11 @@ async function startStatusCheck(message, sender) {
     requestId,
     carrier,
     order,
-    sourceTabId: sender.tab.id,
+    sourceTabId,
     auditId: auditId || "",
     auditWorkerTabId: auditWorkerTabId ?? null,
+    browserFallbackRecordId: browserFallbackRecordId || "",
+    keepCheckerTab: Boolean(browserFallbackRecordId),
     createdAt: Date.now()
   };
   const requestKey = `carrierStatusRequest:${requestId}`;
@@ -521,16 +590,19 @@ async function startStatusCheck(message, sender) {
     : TRACKING_URLS[carrier];
   try {
     const destination = `${trackingUrl}#carrier-claim-check=${encodeURIComponent(requestId)}`;
-    const tab = request.auditWorkerTabId != null
-      ? await chrome.tabs.update(request.auditWorkerTabId, { active: false, url: destination })
-      : await chrome.tabs.create({ active: false, url: destination });
+    const existingCheckerTabId = request.auditWorkerTabId ?? reusableCheckerTabId ?? null;
+    let tab = existingCheckerTabId != null
+      ? await chrome.tabs.update(existingCheckerTabId, { active: false, url: destination }).catch(() => null)
+      : null;
+    if (!tab) tab = await chrome.tabs.create({ active: false, url: destination });
     request.checkerTabId = tab.id;
     if (request.auditWorkerTabId != null) {
       await chrome.storage.session.remove(`orderAuditTab:${request.auditWorkerTabId}`);
     }
     await chrome.storage.session.set({
       [requestKey]: request,
-      [`carrierStatusTab:${tab.id}`]: requestId
+      [`carrierStatusTab:${tab.id}`]: requestId,
+      ...(request.keepCheckerTab ? { [BROWSER_FALLBACK_TAB_KEY]: tab.id } : {})
     });
     await chrome.alarms.create(`carrierStatusTimeout:${requestId}`, { when: Date.now() + STATUS_TIMEOUT_MS });
     return { ok: true, requestId };
@@ -552,24 +624,37 @@ async function deliverStatusResult(message, sender) {
     checkedAt: new Date().toISOString(),
     source: `carrier-page-${request.carrier}`
   };
-  await saveTrackingRecord(request.order, result);
-  await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
-    type: "ORDER_AUDIT_RESULT",
-    auditId: request.auditId,
-    orderId: request.order?.orderId || "",
-    order: request.order,
-    result
-  } : {
-    type: "CARRIER_STATUS_RESULT",
-    requestId: message.requestId,
-    result
-  }).catch(() => {});
+  const saved = await saveTrackingRecord(request.order, result);
+  if (request.browserFallbackRecordId) {
+    if (message.result?.hasResult === false || result.error || saved?.cloudSyncError) {
+      await reportBrowserFallbackFailure(request, result.error || saved?.cloudSyncError || "Carrier page did not return a readable status.");
+    } else {
+      await monitorRequest(`/api/browser-fallback/${encodeURIComponent(request.browserFallbackRecordId)}/complete`, {
+        method: "POST",
+        body: "{}"
+      }).catch((error) => reportBrowserFallbackFailure(request, error.message));
+      await chrome.alarms.create(BROWSER_FALLBACK_NEXT_ALARM, { delayInMinutes: 0.5 });
+    }
+  }
+  if (request.sourceTabId != null) {
+    await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
+      type: "ORDER_AUDIT_RESULT",
+      auditId: request.auditId,
+      orderId: request.order?.orderId || "",
+      order: request.order,
+      result
+    } : {
+      type: "CARRIER_STATUS_RESULT",
+      requestId: message.requestId,
+      result
+    }).catch(() => {});
+  }
   await chrome.alarms.clear(`carrierStatusTimeout:${message.requestId}`);
   await chrome.storage.session.remove([
     key,
     `carrierStatusTab:${sender.tab?.id}`
   ].filter(Boolean));
-  if (request.auditWorkerTabId == null && sender.tab?.id) {
+  if (request.auditWorkerTabId == null && !request.keepCheckerTab && sender.tab?.id) {
     await chrome.tabs.remove(sender.tab.id).catch(() => {});
   }
   return { ok: true };
@@ -588,23 +673,26 @@ async function expireStatusRequest(requestId, explanation) {
       checkedAt: new Date().toISOString(),
       error: explanation
   };
-  await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
-    type: "ORDER_AUDIT_RESULT",
-    auditId: request.auditId,
-    orderId: request.order?.orderId || "",
-    order: request.order,
-    result,
-    error: explanation
-  } : {
-    type: "CARRIER_STATUS_RESULT",
-    requestId,
-    result
-  }).catch(() => {});
+  if (request.browserFallbackRecordId) await reportBrowserFallbackFailure(request, explanation);
+  if (request.sourceTabId != null) {
+    await chrome.tabs.sendMessage(request.sourceTabId, request.auditId ? {
+      type: "ORDER_AUDIT_RESULT",
+      auditId: request.auditId,
+      orderId: request.order?.orderId || "",
+      order: request.order,
+      result,
+      error: explanation
+    } : {
+      type: "CARRIER_STATUS_RESULT",
+      requestId,
+      result
+    }).catch(() => {});
+  }
   await chrome.storage.session.remove([
     requestKey,
     request.checkerTabId == null ? "" : `carrierStatusTab:${request.checkerTabId}`
   ].filter(Boolean));
-  if (request.auditWorkerTabId == null && request.checkerTabId != null) {
+  if (request.auditWorkerTabId == null && !request.keepCheckerTab && request.checkerTabId != null) {
     await chrome.tabs.remove(request.checkerTabId).catch(() => {});
   }
 }
@@ -1028,6 +1116,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.get(BROWSER_FALLBACK_TAB_KEY).then(async (stored) => {
+    if (stored[BROWSER_FALLBACK_TAB_KEY] === tabId) await chrome.storage.session.remove(BROWSER_FALLBACK_TAB_KEY);
+  });
   const sourceWorkerKey = `orderAuditWorker:${tabId}`;
   chrome.storage.session.get(sourceWorkerKey).then(async (stored) => {
     const workerTabId = stored[sourceWorkerKey];
@@ -1074,6 +1165,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === MONITOR_ALERT_ALARM) {
     syncPendingTrackingRecords().catch(() => {});
     refreshMonitorAlerts().catch(() => {});
+    return;
+  }
+  if (alarm.name === BROWSER_FALLBACK_ALARM || alarm.name === BROWSER_FALLBACK_NEXT_ALARM) {
+    runBrowserTrackingFallback().catch(() => {});
     return;
   }
   if (alarm.name.startsWith("orderAuditLoadTimeout:")) {
