@@ -153,6 +153,23 @@ test("does not propose a claim for a delivered parcel", () => {
   }, recommendation), /preuve de remise/);
 });
 
+test("claim previews never expose JavaScript missing-value literals", () => {
+  const message = buildClaimMessage({
+    trackingNumber: "CC000000001FR",
+    shipDate: undefined,
+    recipientName: "undefined",
+    recipientCountry: null,
+    itemValue: "null"
+  }, { reason: "delayed", statusText: undefined });
+
+  assert.doesNotMatch(message, /\b(?:undefined|null)\b/i);
+  assert.match(message, /date inconnue/);
+  assert.match(message, /destinataire non détecté/);
+  assert.match(message, /pays non détecté/);
+  assert.match(message, /valeur non détectée/);
+  assert.match(message, /statut non détecté/);
+});
+
 test("does not classify a recommended non-delivery claim as terminal", () => {
   assert.equal(isTerminalDeliveredRecommendation({
     recommended: true,

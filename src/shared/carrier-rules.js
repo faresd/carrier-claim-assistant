@@ -276,10 +276,20 @@
     return date ? date.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) : value || "date inconnue";
   }
 
+  function claimField(value, fallback) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    return !text || /^(?:undefined|null)$/i.test(text) ? fallback : text;
+  }
+
   function buildClaimMessage(order, recommendation) {
-    const status = String(recommendation.statusText || "").replace(/\s+/g, " ").trim();
-    const value = order.itemValue || "valeur non détectée";
-    const prefix = `Envoi ${order.trackingNumber}, expédié le ${dateFr(order.shipDate)} à ${order.recipientName} (${order.recipientCountry}).`;
+    const safeOrder = order || {};
+    const safeRecommendation = recommendation || {};
+    const status = claimField(safeRecommendation.statusText, "statut non détecté");
+    const trackingNumber = claimField(safeOrder.trackingNumber, "numéro de suivi non détecté");
+    const recipientName = claimField(safeOrder.recipientName, "destinataire non détecté");
+    const recipientCountry = claimField(safeOrder.recipientCountry, "pays non détecté");
+    const value = claimField(safeOrder.itemValue, "valeur non détectée");
+    const prefix = `Envoi ${trackingNumber}, expédié le ${dateFr(claimField(safeOrder.shipDate, ""))} à ${recipientName} (${recipientCountry}).`;
     const messages = {
       damaged: `${prefix} Le suivi signale un dommage ou incident : « ${status.slice(0, 150)} ». Merci d'ouvrir une enquête et de nous indiquer la procédure d'indemnisation (valeur : ${value}).`,
       lost: `${prefix} Le colis n'a pas été livré et ne peut plus être localisé. Le suivi indique : « ${status.slice(0, 150)} ». Merci d'ouvrir une enquête et de procéder à l'indemnisation si la perte est confirmée (valeur : ${value}).`,
@@ -287,7 +297,7 @@
       delayed: `${prefix} Le colis reste non livré au-delà du délai annoncé. Le suivi indique : « ${status.slice(0, 155)} ». Merci d'ouvrir une investigation et de nous communiquer une solution de livraison ou d'indemnisation (valeur : ${value}).`,
       delivered_missing: `${prefix} Le suivi indique que l'envoi a été livré, mais le destinataire confirme ne l'avoir reçu ni en boîte aux lettres ni en main propre. Statut affiché : « ${status.slice(0, 145)} ». Merci d'ouvrir une enquête de livraison et de nous communiquer la preuve de remise (valeur : ${value}).`
     };
-    return (messages[recommendation.reason] || `${prefix} Merci d'examiner l'incident de livraison : « ${status.slice(0, 220)} ».`).slice(0, 500);
+    return (messages[safeRecommendation.reason] || `${prefix} Merci d'examiner l'incident de livraison : « ${status.slice(0, 220)} ».`).slice(0, 500);
   }
 
   const api = {
