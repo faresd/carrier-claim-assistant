@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseOrderDetails, destinationLines } = require("../src/shared/order-parser.js");
+const { parseOrderDetails, destinationLines, enrichSellerContext } = require("../src/shared/order-parser.js");
 
 const AMAZON_ORDER_TEXT = `
 Order details  Order ID: # 111-2222222-3333333
@@ -79,6 +79,20 @@ test("keeps Amazon merchant and marketplace context for multi-account history", 
   );
   assert.equal(order.sellerAccountId, "amzn1.merchant.o.ACCOUNT123");
   assert.equal(order.marketplaceId, "amzn1.mp.o.A13V1IB3VIYZZH");
+});
+
+test("captures the current Seller Central account switcher name", () => {
+  const header = { innerText: "CHRecycle", textContent: "CHRecycle" };
+  const root = {
+    querySelectorAll: () => [],
+    querySelector: (selector) => selector === ".dropdown-account-switcher-header-label-global" ? header : null
+  };
+  const order = enrichSellerContext({
+    sellerAccountId: "amzn1.merchant.o.ACCOUNT123",
+    sellerAccountName: "Seller Central account"
+  }, root, "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333");
+
+  assert.equal(order.sellerAccountName, "CHRecycle");
 });
 
 test("extracts the French Amazon order date label", () => {

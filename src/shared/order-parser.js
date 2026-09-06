@@ -158,6 +158,7 @@
       } catch {}
     }
     const accountControl = [
+      ".dropdown-account-switcher-header-label-global",
       "#sc-mkt-switcher-dp-link",
       '[data-testid*="merchant" i]',
       '[aria-label*="merchant" i]',
