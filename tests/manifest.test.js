@@ -102,6 +102,13 @@ test("fixes browser pairing to the production monitor origin", () => {
   assert.match(options, /name="monitorServerUrl"[^>]+value="https:\/\/tracking\.cheaply\.fr"[^>]+readonly/);
 });
 
+test("falls back to one leased reusable carrier tab when the server API fails", () => {
+  assert.match(backgroundScript, /carrierBrowserTrackingFallback/);
+  assert.match(backgroundScript, /\/api\/browser-fallback\/lease/);
+  assert.match(backgroundScript, /reusableCheckerTabId/);
+  assert.match(backgroundScript, /keepCheckerTab/);
+});
+
 test("includes privacy-safe Chrome Web Store graphics at the required dimensions", () => {
   const pngDimensions = (file) => {
     const data = fs.readFileSync(path.join(root, file));

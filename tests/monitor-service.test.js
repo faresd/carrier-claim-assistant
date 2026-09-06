@@ -13,6 +13,7 @@ const migration = read("monitor-service", "migrations", "0001_initial.sql");
 const deletionIndexes = read("monitor-service", "migrations", "0002_resolved_deletion_indexes.sql");
 const deletionTombstones = read("monitor-service", "migrations", "0003_deleted_order_tombstones.sql");
 const orderTrackingMetadata = read("monitor-service", "migrations", "0004_order_tracking_metadata.sql");
+const browserFallbackLeases = read("monitor-service", "migrations", "0006_browser_fallback_leases.sql");
 const wrangler = read("monitor-service", "wrangler.toml");
 const dashboard = read("monitor-service", "admin", "index.html");
 const dashboardScript = read("monitor-service", "admin", "app.js");
@@ -55,6 +56,10 @@ test("monitor schema keeps multi-account history, idempotent jobs, devices, clai
   assert.match(deletionTombstones, /PRAGMA optimize/);
   assert.match(orderTrackingMetadata, /ADD COLUMN order_date/);
   assert.match(orderTrackingMetadata, /ADD COLUMN tracking_source/);
+  assert.match(browserFallbackLeases, /CREATE TABLE IF NOT EXISTS browser_fallback_leases/);
+  assert.match(browserFallbackLeases, /lease_id TEXT NOT NULL UNIQUE/);
+  assert.match(worker, /\/api\/browser-fallback\/lease/);
+  assert.match(worker, /fresh carrier-page result/i);
   assert.match(worker, /orderDate:\s*clean\(input\.orderDate/);
   assert.match(worker, /"notification_receipts", "deleted_orders"/);
   assert.match(worker, /\/api\/claim-launch\/redeem/);

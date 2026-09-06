@@ -86,6 +86,14 @@ function send(message, sender = {}) {
   });
 }
 
+async function waitFor(predicate, timeoutMs = 1000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for background work.");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 test("merges new defaults without overwriting existing sender settings", async () => {
   local.senderProfile = { email: "custom@example.com", city: "Paris" };
   local.claimSettings = {
@@ -809,4 +817,69 @@ test("audits a page sequentially through one reusable inactive worker tab", asyn
   assert.deepEqual(released, { ok: true, released: true });
   assert.equal(session["orderAuditWorker:70"], undefined);
   assert.ok(removedTabs.includes(detailTab.id));
+});
+
+test("leases failed API checks and reuses one carrier tab for browser fallback", async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const tabStart = createdTabs.length;
+  const updateStart = updatedTabs.length;
+  const removeStart = removedTabs.length;
+  let leaseCalls = 0;
+  local.claimSettings = {
+    ...local.claimSettings,
+    cloudSyncEnabled: true,
+    monitorServerUrl: "https://tracking.cheaply.fr",
+    monitorAccessToken: "paired-token"
+  };
+  global.fetch = async (url, options = {}) => {
+    const href = String(url);
+    requests.push({ href, options });
+    if (href.endsWith("/api/browser-fallback/lease")) {
+      leaseCalls += 1;
+      const suffix = leaseCalls === 1 ? "1" : "2";
+      return Response.json({ ok: true, order: {
+        recordId: `merchant-one|A13V1IB3VIYZZH|400-1234567-123456${suffix}`,
+        accountId: "merchant-one",
+        accountName: "Cheaply France",
+        marketplaceId: "A13V1IB3VIYZZH",
+        orderId: `400-1234567-123456${suffix}`,
+        trackingNumber: `CC00000000${suffix}FR`,
+        carrierId: "laposte",
+        carrierLabel: "Colissimo"
+      } });
+    }
+    if (href.endsWith("/api/orders")) return Response.json({ ok: true });
+    if (/\/api\/browser-fallback\/.*\/complete$/.test(href)) return Response.json({ ok: true, completed: true });
+    if (/\/api\/browser-fallback\/.*\/fail$/.test(href)) return Response.json({ ok: true });
+    throw new Error(`Unexpected request: ${href}`);
+  };
+  try {
+    listeners.alarm({ name: "carrierBrowserTrackingFallback" });
+    await waitFor(() => createdTabs.length === tabStart + 1);
+    const firstTab = createdTabs.at(-1);
+    assert.equal(firstTab.active, false);
+    assert.match(firstTab.url, /www\.laposte\.fr.*carrier-claim-check=/);
+    const firstRequestKey = Object.keys(session).find((key) =>
+      key.startsWith("carrierStatusRequest:") && session[key]?.browserFallbackRecordId
+    );
+    const firstRequestId = firstRequestKey.split(":")[1];
+    const firstResult = await send({
+      type: "CARRIER_STATUS_SCRAPED",
+      requestId: firstRequestId,
+      result: { hasResult: true, statusText: "Votre Colissimo est en retour à l'expéditeur.", summaryText: "", eventDate: null }
+    }, { tab: { id: firstTab.id } });
+    assert.equal(firstResult.ok, true);
+    assert.ok(requests.some((request) => /\/complete$/.test(request.href)), JSON.stringify(requests.map((request) => request.href)));
+    assert.equal(session.carrierBrowserTrackingFallbackTab, firstTab.id);
+    assert.equal(removedTabs.length, removeStart, "the shared fallback tab remains available for the next parcel");
+
+    listeners.alarm({ name: "carrierBrowserTrackingFallbackNext" });
+    await waitFor(() => updatedTabs.length === updateStart + 1);
+    assert.equal(updatedTabs.at(-1).tabId, firstTab.id);
+    assert.match(updatedTabs.at(-1).options.url, /CC000000002FR/);
+    assert.equal(createdTabs.length, tabStart + 1, "the second check reuses the existing tab");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

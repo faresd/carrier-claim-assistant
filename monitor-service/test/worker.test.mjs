@@ -10,7 +10,9 @@ import monitorWorker, {
   enqueueDailyMonitor,
   fetchOfficialTracking,
   fetchOpenAIInterpretation,
+  finishBrowserFallback,
   interpretAmbiguousTracking,
+  leaseBrowserFallback,
   monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
@@ -52,6 +54,7 @@ async function monitorDatabase() {
   database.exec(await readFile(new URL("../migrations/0003_deleted_order_tombstones.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0004_order_tracking_metadata.sql", import.meta.url), "utf8"));
   database.exec(await readFile(new URL("../migrations/0005_tracking_current_evidence.sql", import.meta.url), "utf8"));
+  database.exec(await readFile(new URL("../migrations/0006_browser_fallback_leases.sql", import.meta.url), "utf8"));
   return { database, db: new D1SqliteAdapter(database) };
 }
 
@@ -130,6 +133,70 @@ test("queues an explicit per-order recheck and allows fresh carrier evidence to 
   assert.equal(database.prepare("SELECT tracking_state FROM orders WHERE record_id = ?").get(order.recordId).tracking_state, "lost");
   assert.equal(database.prepare("SELECT order_date FROM orders WHERE record_id = ?").get(order.recordId).order_date, "2 September 2026, 09:15 CEST");
   assert.equal(database.prepare("SELECT tracking_source FROM orders WHERE record_id = ?").get(order.recordId).tracking_source, "laposte-suivi-v2");
+});
+
+test("leases failed API checks to one paired browser at a time", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const now = new Date("2026-09-06T05:45:00.000Z");
+  for (const [index, deviceId] of ["browser-a", "browser-b"].entries()) {
+    database.prepare(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?)`).run(deviceId, deviceId, `hash-${index}`, now.toISOString(), now.toISOString());
+    const order = await upsertOrder(db, {
+      orderId: `400-123456${index}-1234567`, trackingNumber: `CC00000000${index}FR`,
+      sellerAccountId: "merchant-one", marketplaceId: "A13V1IB3VIYZZH", trackingState: "in_transit",
+      checkedAt: "2026-09-05T05:00:00.000Z"
+    });
+    database.prepare(`INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count, processed_count, error_count)
+      VALUES (?, ?, ?, 1, 1, 1)`).run(`run-${index}`, now.toISOString(), now.toISOString());
+    database.prepare(`INSERT INTO monitor_jobs (run_date, record_id, status, attempts, last_error, created_at, updated_at)
+      VALUES (?, ?, 'failed', 4, 'Suivi unavailable', ?, ?)`).run(`run-${index}`, order.recordId, now.toISOString(), now.toISOString());
+  }
+
+  const first = await leaseBrowserFallback(db, "browser-a", now);
+  const second = await leaseBrowserFallback(db, "browser-b", now);
+  assert.ok(first.order?.recordId);
+  assert.ok(second.order?.recordId);
+  assert.notEqual(first.order.recordId, second.order.recordId);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM browser_fallback_leases").get().count, 2);
+
+  await assert.rejects(
+    () => finishBrowserFallback(db, "browser-a", first.order.recordId, { date: new Date(now.getTime() + 1000) }),
+    /fresh carrier-page result/i
+  );
+  database.prepare("UPDATE orders SET checked_at = ?, tracking_source = 'carrier-page-laposte' WHERE record_id = ?")
+    .run(new Date(now.getTime() + 500).toISOString(), first.order.recordId);
+  const completed = await finishBrowserFallback(db, "browser-a", first.order.recordId, { date: new Date(now.getTime() + 1000) });
+  assert.equal(completed.completed, true);
+  const failed = await finishBrowserFallback(db, "browser-b", second.order.recordId, {
+    error: "Carrier page unavailable", date: new Date(now.getTime() + 1000)
+  });
+  assert.equal(failed.retryAt, "2026-09-06T11:45:01.000Z");
+  assert.equal((await leaseBrowserFallback(db, "browser-a", new Date(now.getTime() + 2000))).order, null);
+});
+
+test("does not lease terminal, placeholder, or already-refreshed tracking records", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const now = new Date("2026-09-06T05:45:00.000Z");
+  database.prepare(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
+    VALUES ('browser-a', 'Browser A', 'hash-a', ?, ?)`).run(now.toISOString(), now.toISOString());
+  const cases = [
+    ["delivered", "CC000000001FR", "2026-09-05T05:00:00.000Z"],
+    ["in_transit", "PENDING-TRACKING-NUMBER", "2026-09-05T05:00:00.000Z"],
+    ["in_transit", "CC000000003FR", "2026-09-06T05:46:00.000Z"]
+  ];
+  for (const [index, [trackingState, trackingNumber, checkedAt]] of cases.entries()) {
+    const order = await upsertOrder(db, {
+      orderId: `400-223456${index}-1234567`, trackingNumber, trackingState, checkedAt,
+      sellerAccountId: "merchant-one", marketplaceId: "A13V1IB3VIYZZH"
+    });
+    database.prepare(`INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count, processed_count, error_count)
+      VALUES (?, ?, ?, 1, 1, 1)`).run(`terminal-${index}`, now.toISOString(), now.toISOString());
+    database.prepare(`INSERT INTO monitor_jobs (run_date, record_id, status, attempts, last_error, created_at, updated_at)
+      VALUES (?, ?, 'failed', 4, 'Suivi unavailable', ?, ?)`).run(`terminal-${index}`, order.recordId, now.toISOString(), now.toISOString());
+  }
+  assert.equal((await leaseBrowserFallback(db, "browser-a", now)).order, null);
 });
 
 test("lets the newest delivered or lost event override older return history", () => {
@@ -619,6 +686,43 @@ test("pairs two browsers, tracks two Amazon accounts, repeats per-device pickup 
   const listed = await listResponse.json();
   assert.equal(listed.orders.length, 2);
   assert.deepEqual(new Set(listed.orders.map((order) => order.accountId)), new Set(["merchant-fr-one", "merchant-fr-two"]));
+
+  const failedAt = new Date().toISOString();
+  const fallbackRecordId = `${secondOrder.sellerAccountId}|${secondOrder.marketplaceId}|${secondOrder.orderId}`;
+  await db.prepare(`INSERT INTO monitor_runs (run_date, started_at, completed_at, queued_count, processed_count, error_count)
+    VALUES ('fallback-integration', ?, ?, 1, 1, 1)`).bind(failedAt, failedAt).run();
+  await db.prepare(`INSERT INTO monitor_jobs (run_date, record_id, status, attempts, last_error, created_at, updated_at)
+    VALUES ('fallback-integration', ?, 'failed', 4, 'Suivi unavailable', ?, ?)`)
+    .bind(fallbackRecordId, failedAt, failedAt).run();
+  const adminFallbackLease = await monitorWorker.fetch(jsonRequest("/api/browser-fallback/lease", {
+    cookie: adminCookie, origin: "https://tracking.cheaply.fr"
+  }), env);
+  assert.equal(adminFallbackLease.status, 403);
+  const fallbackLease = await monitorWorker.fetch(jsonRequest("/api/browser-fallback/lease", {
+    token: secondPairing.token
+  }), env);
+  assert.equal(fallbackLease.status, 200);
+  assert.equal((await fallbackLease.json()).order.recordId, fallbackRecordId);
+  const prematureCompletion = await monitorWorker.fetch(jsonRequest(`/api/browser-fallback/${encodeURIComponent(fallbackRecordId)}/complete`, {
+    token: secondPairing.token, body: {}
+  }), env);
+  assert.equal(prematureCompletion.status, 409);
+  const browserRefresh = await monitorWorker.fetch(jsonRequest("/api/orders", {
+    token: secondPairing.token,
+    body: {
+      ...secondOrder,
+      statusText: "Votre Colissimo est en retour à l'expéditeur.",
+      trackingState: "returning",
+      trackingSource: "carrier-page-laposte",
+      checkedAt: new Date(Date.now() + 1000).toISOString()
+    }
+  }), env);
+  assert.equal(browserRefresh.status, 200);
+  const completedFallback = await monitorWorker.fetch(jsonRequest(`/api/browser-fallback/${encodeURIComponent(fallbackRecordId)}/complete`, {
+    token: secondPairing.token, body: {}
+  }), env);
+  assert.equal(completedFallback.status, 200);
+  assert.equal((await completedFallback.json()).completed, true);
 
   const pickup = await upsertOrder(db, {
     ...firstOrder,
