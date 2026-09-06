@@ -11,7 +11,7 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
 - **Cloudflare Queue**: reliable, rate-limited carrier checks that scale beyond one Worker invocation and retry temporary carrier failures.
 - **[Cloudflare D1](https://developers.cloudflare.com/d1/)**: durable multi-account order history, current state, claim context, tracking events, devices, and resolutions.
 - **[La Poste Suivi v2](https://developer.laposte.fr/catalog-apis/suivi%402)** with a controlled legacy fallback: the Worker tries the current `suivi/v2/idships/{tracking}?lang=fr_FR` resource first, then the official original [`suivi/v1/{tracking}`](https://faq.developer.laposte.fr/kb/guide/fr/comment-mauthentifier-et-obtenir-une-cle-dapplication-FGCSUKye5P/Steps/2877169) resource when v2 is unavailable. The API key is a Worker secret and never reaches the extension.
-- **Chrome/Brave extension**: registers Amazon order context, displays row badges, polls urgent alerts, and shows desktop notifications.
+- **Chrome/Brave extension**: registers Amazon order context, displays row badges, polls urgent alerts, and shows desktop notifications. If both server-side La Poste API versions fail, paired browsers cooperatively lease those failed checks and reuse one inactive official carrier-page tab; a five-minute lease prevents duplicate checks across profiles and a failed page is held for six hours before retry.
 
 Each record includes a sanitized claim-ready package: seller account, shipment and item identifiers, value/quantity, sender contact/address, recipient/title/address, detected reason, editable message, tracking context, and claim outcome. From the dashboard, **Start claim** creates a single-use ten-minute token and opens the official La Poste or Chronopost workflow. Only a paired extension can redeem that token, and the existing final confirmation remains mandatory.
 
@@ -55,7 +55,7 @@ The extension and server share one deterministic classifier. Current shipment su
 
 The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2 (an explicitly approved pending mode keeps infrastructure deployable while the fallback is used). The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
 
-The health response is ready only after the Worker can see every required secret and binding and all eleven D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
+The health response is ready only after the Worker can see every required secret and binding and all twelve D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
 
 Only central SSO administrators may enter by default. An optional `TRACKING_ADMIN_EMAILS` Worker secret may explicitly allow selected authenticated employee emails. Browser uploads use independently revocable per-device bearer tokens; no global master upload token or dashboard bearer token is provisioned by CI.
 
@@ -80,7 +80,7 @@ The claim endpoint also requires Chrome/Brave's immutable `chrome-extension://` 
 
 Active six-digit codes are never stored as readable values in D1. The Worker stores a domain-separated HMAC keyed by the dashboard session secret, so a database-only disclosure does not reveal a currently active code or permit an offline six-digit lookup.
 
-After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally.
+After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally. When the morning Worker run exhausts both Suivi v2 and the legacy v1 fallback, the server leases each failed non-terminal order to at most one paired browser. The extension checks the official carrier page in one reusable inactive tab, uploads the fresh result, and then advances to the next lease. Delivered and resolved records, placeholder tracking numbers, and checks already refreshed by another browser are excluded.
 
 ## Export and deletion
 
