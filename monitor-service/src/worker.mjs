@@ -256,18 +256,46 @@ export async function upsertOrder(db, input) {
     throw error;
   }
   let migratedFallbackAccount = "";
-  const existingAccountOrder = await db.prepare(`SELECT record_id, account_id FROM orders
+  const existingAccountOrder = await db.prepare(`SELECT record_id, account_id, account_name FROM orders
     WHERE order_id = ? AND marketplace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 1`)
     .bind(order.orderId, order.marketplaceId, order.accountId).first();
   if (existingAccountOrder?.record_id) {
     order.recordId = existingAccountOrder.record_id;
-  } else if (!fallbackAccounts.has(order.accountId)) {
-    const fallback = await db.prepare(`SELECT record_id, account_id FROM orders
-      WHERE order_id = ? AND marketplace_id = ? AND account_id IN ('default', 'sellercentral.amazon.fr')
-      ORDER BY updated_at DESC LIMIT 1`).bind(order.orderId, order.marketplaceId).first();
-    if (fallback?.record_id && fallback.record_id !== order.recordId) {
-      order.recordId = fallback.record_id;
-      migratedFallbackAccount = fallback.account_id;
+  } else {
+    const accountIsGeneric = fallbackAccounts.has(order.accountId);
+    const accountIsNameDerived = order.accountId.startsWith("seller-name:");
+    let aliasRows;
+    if (accountIsGeneric) {
+      aliasRows = await db.prepare(`SELECT record_id, account_id, account_name FROM orders
+        WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
+          AND account_id NOT IN ('default', 'sellercentral.amazon.fr')
+        ORDER BY updated_at DESC LIMIT 2`).bind(order.orderId, order.marketplaceId, order.trackingNumber).all();
+    } else if (accountIsNameDerived) {
+      aliasRows = await db.prepare(`SELECT record_id, account_id, account_name FROM orders
+        WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
+          AND account_id IN ('default', 'sellercentral.amazon.fr')
+        ORDER BY updated_at DESC LIMIT 2`).bind(order.orderId, order.marketplaceId, order.trackingNumber).all();
+    } else {
+      aliasRows = await db.prepare(`SELECT record_id, account_id, account_name FROM orders
+        WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
+          AND (account_id IN ('default', 'sellercentral.amazon.fr')
+            OR (account_id LIKE 'seller-name:%' AND account_name = ?))
+        ORDER BY updated_at DESC LIMIT 2`).bind(
+          order.orderId, order.marketplaceId, order.trackingNumber, order.accountName
+        ).all();
+    }
+    const aliases = aliasRows?.results || [];
+    if (aliases.length === 1 && aliases[0].record_id !== order.recordId) {
+      const alias = aliases[0];
+      order.recordId = alias.record_id;
+      if (accountIsGeneric) {
+        // A stale browser must never downgrade an identity already learned from
+        // the Seller Central account switcher or merchant URL.
+        order.accountId = alias.account_id;
+        order.accountName = alias.account_name || alias.account_id;
+      } else {
+        migratedFallbackAccount = alias.account_id;
+      }
     }
   }
   await repairStoredTrackingStates(db, order.recordId);
