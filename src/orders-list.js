@@ -4,6 +4,7 @@
   if (window.top !== window || document.getElementById("lpca-orders-toolbar")) return;
 
   const rules = globalThis.CarrierClaimRules;
+  const orderParser = globalThis.LaPosteOrderParser;
   const listRules = globalThis.CarrierOrderListRules;
   const trackingRecords = globalThis.CarrierTrackingRecords;
   const MAX_CONCURRENCY = 1;
@@ -51,6 +52,7 @@
       orderId: entry?.orderId || order?.orderId || "",
       trackingNumber: order?.trackingNumber || "",
       sellerAccountId: order?.sellerAccountId || entry?.sellerAccountId || "sellercentral.amazon.fr",
+      sellerAccountName: order?.sellerAccountName || entry?.sellerAccountName || "",
       marketplaceId: order?.marketplaceId || entry?.marketplaceId || "A13V1IB3VIYZZH"
     };
   }
@@ -240,7 +242,9 @@
     const discoveredOrderIds = [];
     const visibleOrderIds = new Set();
     const links = [...document.querySelectorAll('a[href*="/orders-v3/order/"]')];
-    const pageContext = sellerContextFromUrl(location.href);
+    const pageContext = orderParser?.enrichSellerContext
+      ? orderParser.enrichSellerContext(sellerContextFromUrl(location.href), document, location.href)
+      : sellerContextFromUrl(location.href);
     for (const link of links) {
       const orderId = listRules.orderIdFromHref(link.href);
       if (!orderId || link.textContent.trim() !== orderId) continue;
@@ -256,6 +260,7 @@
         link,
         row,
         sellerAccountId: linkContext.sellerAccountId || pageContext.sellerAccountId || previous.sellerAccountId || "sellercentral.amazon.fr",
+        sellerAccountName: pageContext.sellerAccountName || previous.sellerAccountName || "",
         marketplaceId: linkContext.marketplaceId || pageContext.marketplaceId || previous.marketplaceId || "A13V1IB3VIYZZH"
       });
       renderOrder(orderId);
@@ -342,6 +347,7 @@
     const entry = state.rows.get(orderId);
     if (entry && audit?.order) {
       entry.sellerAccountId = audit.order.sellerAccountId || entry.sellerAccountId;
+      entry.sellerAccountName = audit.order.sellerAccountName || entry.sellerAccountName;
       entry.marketplaceId = audit.order.marketplaceId || entry.marketplaceId;
     }
     const key = trackingRecords.recordKey(entryIdentity(entry || { orderId }, audit?.order)) || orderId;

@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseOrderDetails, destinationLines, enrichSellerContext } = require("../src/shared/order-parser.js");
+const { parseOrderDetails, destinationLines, enrichSellerContext, sellerNameAccountId } = require("../src/shared/order-parser.js");
 
 const AMAZON_ORDER_TEXT = `
 Order details  Order ID: # 111-2222222-3333333
@@ -93,6 +93,23 @@ test("captures the current Seller Central account switcher name", () => {
   }, root, "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333");
 
   assert.equal(order.sellerAccountName, "CHRecycle");
+  assert.equal(order.sellerAccountId, "amzn1.merchant.o.ACCOUNT123");
+});
+
+test("uses the current Seller Central name as a stable identity when Amazon omits the merchant ID", () => {
+  const header = { innerText: "Cheaply España", textContent: "Cheaply España" };
+  const root = {
+    querySelectorAll: () => [],
+    querySelector: (selector) => selector === ".dropdown-account-switcher-header-label-global" ? header : null
+  };
+  const order = enrichSellerContext({
+    sellerAccountId: "sellercentral.amazon.fr",
+    sellerAccountName: "Seller Central account"
+  }, root, "https://sellercentral.amazon.fr/orders-v3/order/111-2222222-3333333");
+
+  assert.equal(order.sellerAccountName, "Cheaply España");
+  assert.equal(order.sellerAccountId, "seller-name:cheaply-espana");
+  assert.equal(sellerNameAccountId("  CHRecycle  "), "seller-name:chrecycle");
 });
 
 test("extracts the French Amazon order date label", () => {

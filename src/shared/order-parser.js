@@ -18,6 +18,21 @@
       .trim();
   }
 
+  function sellerNameAccountId(accountName) {
+    const slug = clean(accountName)
+      .normalize("NFKD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 140);
+    return slug ? `seller-name:${slug}` : "";
+  }
+
+  function isGenericSellerAccountId(value) {
+    return !value || ["default", "sellercentral.amazon.fr"].includes(clean(value).toLowerCase());
+  }
+
   function linesOf(text) {
     return String(text || "")
       .split(/\r?\n/)
@@ -167,13 +182,19 @@
     const accountName = clean(accountControl?.innerText || accountControl?.textContent || "");
     if (accountName && accountName.length <= 160 && !/^(amazon|france|settings|help)$/i.test(accountName)) {
       next.sellerAccountName = accountName;
+      if (isGenericSellerAccountId(next.sellerAccountId)) {
+        next.sellerAccountId = sellerNameAccountId(accountName) || next.sellerAccountId || "sellercentral.amazon.fr";
+      }
     } else if (!next.sellerAccountName || next.sellerAccountName === "Seller Central account") {
       next.sellerAccountName = next.sellerAccountId || "Seller Central account";
     }
     return next;
   }
 
-  const api = { clean, linesOf, parseOrderDetails, destinationLines, enrichSellerContext };
+  const api = {
+    clean, linesOf, sellerNameAccountId, isGenericSellerAccountId,
+    parseOrderDetails, destinationLines, enrichSellerContext
+  };
   root.LaPosteOrderParser = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

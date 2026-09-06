@@ -121,6 +121,35 @@ test("enriching the seller account corrects an earlier fallback record key", () 
   assert.equal(record.recordId, "merchant-real|A13V1IB3VIYZZH|111-2222222-3333333");
 });
 
+test("aliases only the same progressively discovered seller identity", () => {
+  const generic = { orderId: "111-2222222-3333333", sellerAccountId: "sellercentral.amazon.fr", sellerAccountName: "Seller Central account" };
+  const named = { ...generic, sellerAccountId: "seller-name:chrecycle", sellerAccountName: "CHRecycle" };
+  const real = { ...generic, sellerAccountId: "amzn1.merchant.o.CHR", sellerAccountName: "CHRecycle" };
+  const otherNamed = { ...generic, sellerAccountId: "seller-name:cheaply-es", sellerAccountName: "Cheaply ES" };
+
+  assert.equal(records.sellerAccountsCanAlias(generic, named), true);
+  assert.equal(records.sellerAccountsCanAlias(named, real), true);
+  assert.equal(records.sellerAccountsCanAlias(named, otherNamed), false);
+  assert.equal(records.sellerAccountsCanAlias(generic, { ...named, marketplaceId: "amazon-de" }), false);
+  assert.equal(records.sellerAccountSpecificity(generic.sellerAccountId), 0);
+  assert.equal(records.sellerAccountSpecificity(named.sellerAccountId), 1);
+  assert.equal(records.sellerAccountSpecificity(real.sellerAccountId), 2);
+});
+
+test("finds a name-derived local record after Amazon reveals its real merchant ID", () => {
+  const orderId = "111-2222222-3333333";
+  const named = {
+    recordId: `seller-name:chrecycle|A13V1IB3VIYZZH|${orderId}`,
+    orderId,
+    trackingNumber: "CC000000001FR",
+    sellerAccountId: "seller-name:chrecycle",
+    sellerAccountName: "CHRecycle",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  const real = { ...named, sellerAccountId: "amzn1.merchant.o.CHR" };
+  assert.equal(records.findRecord({ [named.recordId]: named }, real), named);
+});
+
 test("keeps the same Amazon order number isolated across seller accounts", () => {
   const orderId = "999-1111111-2222222";
   const first = {

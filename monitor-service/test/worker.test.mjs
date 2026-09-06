@@ -1169,16 +1169,16 @@ test("moves an early fallback record into the discovered Amazon seller account w
     trackingState: "returning",
     checkedAt: "2026-09-01T07:00:00.000Z"
   });
-  const enriched = await upsertOrder(db, {
+  const named = await upsertOrder(db, {
     orderId,
     trackingNumber: "XY123456789FR",
-    sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
+    sellerAccountId: "seller-name:cheaply-france",
     sellerAccountName: "Cheaply France",
     marketplaceId,
-    trackingState: "pickup_ready",
+    trackingState: "returning",
     checkedAt: "2026-09-02T07:00:00.000Z"
   });
-  const repeated = await upsertOrder(db, {
+  const enriched = await upsertOrder(db, {
     orderId,
     trackingNumber: "XY123456789FR",
     sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
@@ -1187,10 +1187,20 @@ test("moves an early fallback record into the discovered Amazon seller account w
     trackingState: "pickup_ready",
     checkedAt: "2026-09-03T07:00:00.000Z"
   });
+  const repeated = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "XY123456789FR",
+    sellerAccountId: "amzn1.merchant.o.A19A98AEOKAGHS",
+    sellerAccountName: "Cheaply France",
+    marketplaceId,
+    trackingState: "pickup_ready",
+    checkedAt: "2026-09-04T07:00:00.000Z"
+  });
 
   const rows = database.prepare("SELECT record_id, account_id, account_name, tracking_state FROM orders").all();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].record_id, initial.recordId);
+  assert.equal(named.recordId, initial.recordId);
   assert.equal(enriched.recordId, initial.recordId);
   assert.equal(repeated.recordId, initial.recordId);
   assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
@@ -1199,6 +1209,51 @@ test("moves an early fallback record into the discovered Amazon seller account w
   assert.deepEqual(
     database.prepare("SELECT account_id FROM seller_accounts ORDER BY account_id").all().map((row) => row.account_id),
     ["amzn1.merchant.o.A19A98AEOKAGHS"]
+  );
+});
+
+test("a stale generic browser cannot downgrade a discovered seller identity", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const identity = {
+    orderId: "408-9133278-8011503",
+    trackingNumber: "CC123456789FR",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  const named = await upsertOrder(db, {
+    ...identity,
+    sellerAccountId: "seller-name:chrecycle",
+    sellerAccountName: "CHRecycle",
+    trackingState: "returning"
+  });
+  const stale = await upsertOrder(db, {
+    ...identity,
+    sellerAccountId: "sellercentral.amazon.fr",
+    sellerAccountName: "Seller Central account",
+    trackingState: "unknown"
+  });
+
+  const rows = database.prepare("SELECT record_id, account_id, account_name FROM orders").all();
+  assert.equal(rows.length, 1);
+  assert.equal(stale.recordId, named.recordId);
+  assert.equal(rows[0].account_id, "seller-name:chrecycle");
+  assert.equal(rows[0].account_name, "CHRecycle");
+});
+
+test("does not merge two distinct name-derived Amazon accounts", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const common = {
+    orderId: "408-9133278-8011504",
+    trackingNumber: "CC123456788FR",
+    marketplaceId: "A13V1IB3VIYZZH"
+  };
+  await upsertOrder(db, { ...common, sellerAccountId: "seller-name:chrecycle", sellerAccountName: "CHRecycle" });
+  await upsertOrder(db, { ...common, sellerAccountId: "seller-name:cheaply-es", sellerAccountName: "Cheaply ES" });
+
+  assert.deepEqual(
+    database.prepare("SELECT account_id FROM orders ORDER BY account_id").all().map((row) => row.account_id),
+    ["seller-name:cheaply-es", "seller-name:chrecycle"]
   );
 });
 

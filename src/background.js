@@ -260,9 +260,10 @@ async function saveTrackingRecord(order, result = {}, recommendation = null, out
     const resolvedOutcome = outcome || trackingRecords.findRecord(stored[CLAIM_OUTCOMES_KEY] || {}, order);
     const previousIdentity = trackingRecords.identity(previous || {});
     const orderIdentity = trackingRecords.identity(order);
-    const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
-    const accountWasDisambiguated = previous && fallbackAccounts.has(previousIdentity.sellerAccountId)
-      && !fallbackAccounts.has(orderIdentity.sellerAccountId);
+    const accountWasDisambiguated = previous &&
+      trackingRecords.sellerAccountsCanAlias(previous, order) &&
+      trackingRecords.sellerAccountSpecificity(orderIdentity.sellerAccountId) >
+        trackingRecords.sellerAccountSpecificity(previousIdentity.sellerAccountId);
     const record = {
       ...trackingRecords.buildRecord({ order, result, recommendation: resolvedRecommendation, outcome: resolvedOutcome, previous }),
       cloudSyncRevision: crypto.randomUUID(),
@@ -357,9 +358,9 @@ async function mergeRemoteTrackingRecords(remoteOrders = []) {
       if (!remote?.orderId) continue;
       const previousEntry = trackingRecords.findRecordEntry(records, remote);
       const local = previousEntry?.value || {};
-      const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
-      const preserveAccount = previousEntry && !fallbackAccounts.has(trackingRecords.identity(local).sellerAccountId)
-        && fallbackAccounts.has(trackingRecords.identity(remote).sellerAccountId);
+      const preserveAccount = previousEntry && trackingRecords.sellerAccountsCanAlias(local, remote) &&
+        trackingRecords.sellerAccountSpecificity(trackingRecords.identity(local).sellerAccountId) >
+          trackingRecords.sellerAccountSpecificity(trackingRecords.identity(remote).sellerAccountId);
       const key = trackingRecords.recordKey(preserveAccount ? local : remote);
       if (!key || local.cloudDeletedAt) continue;
       if (previousEntry?.key && previousEntry.key !== key) delete records[previousEntry.key];
