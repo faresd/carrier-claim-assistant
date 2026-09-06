@@ -37,6 +37,7 @@ test("manifest wires the Amazon order assistant and supported carrier pages", ()
   const ordersList = manifest.content_scripts.find((entry) => entry.js.includes("src/orders-list.js"));
   assert.ok(ordersList.matches.includes("https://sellercentral.amazon.fr/orders-v3/mfn/*"));
   assert.deepEqual(ordersList.js, [
+    "src/shared/order-parser.js",
     "src/shared/carrier-rules.js",
     "src/shared/order-list-rules.js",
     "src/shared/tracking-records.js",
