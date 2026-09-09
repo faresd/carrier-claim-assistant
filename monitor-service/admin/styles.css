@@ -32,6 +32,9 @@ p { color: var(--muted); margin: 0; line-height: 1.5; }
 .button--secondary { color: #26364a; background: white; border: 1px solid #cbd4df; box-shadow: none; }
 .button--secondary:hover { background: #f7f9fb; }
 .button--urgent { background: var(--orange); white-space: nowrap; }
+.cheaply-auth-button { display: inline-flex; align-items: center; gap: 10px; padding: 9px 16px 9px 10px; color: #18221f; border: 1px solid #cfe0b8; background: linear-gradient(180deg, #fff, #f3ffe5); box-shadow: 0 8px 22px rgba(63, 113, 28, .16); }
+.cheaply-auth-button:hover { color: #18221f; background: #d9ff9a; }
+.cheaply-auth-button img { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; background: #fff; box-shadow: 0 0 0 1px rgba(20,32,51,.08); }
 .auth-card, .urgent-card { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 20px 22px; border-radius: 14px; margin-bottom: 18px; }
 .auth-card { background: #eef5ff; border: 1px solid #cfe0f5; }
 .auth-card strong, .urgent-card strong { display: block; margin-bottom: 3px; }

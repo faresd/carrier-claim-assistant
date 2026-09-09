@@ -1,6 +1,6 @@
 # Optional Cheaply Auth migration
 
-`https://auth.cheaply.fr` is the target central OAuth/OIDC issuer for Cheaply applications. Keep this integration optional until the new Auth service, PostgreSQL storage, Kubernetes rollout, DNS ownership, and canary checks are complete.
+`https://auth.cheaply.fr` is the target central OAuth/OIDC issuer for Cheaply applications. Keep this integration optional until the Auth service, PostgreSQL storage, Google Cloud Run rollout, DNS ownership, and canary checks are complete.
 
 Default production behavior must remain unchanged while `CHEAPLY_AUTH_ENABLED=false`.
 
