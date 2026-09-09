@@ -11,8 +11,8 @@ test("accepts the registered tracking-web SSO redirect without following it", as
       return new Response(null, {
         status: 303,
         headers: {
-          location: "https://mail.cheaply.fr/auth/sso/bridge?state=central-state",
-          "set-cookie": "__Host-cheaply_sso_request=signed; Path=/; HttpOnly; Secure; SameSite=Lax"
+          location: "https://auth.cheaply.fr/interaction/mock-interaction",
+          "set-cookie": "_interaction=signed; Path=/interaction/mock-interaction; HttpOnly; Secure; SameSite=Lax, _interaction_resume=signed; Path=/authorize/mock-interaction; HttpOnly; Secure; SameSite=Lax"
         }
       });
     }
@@ -48,7 +48,7 @@ test("rejects an accepted client redirect to an untrusted login origin", async (
         status: 303,
         headers: {
           location: "https://malicious.invalid/login",
-          "set-cookie": "__Host-cheaply_sso_request=signed"
+          "set-cookie": "_interaction=signed; _interaction_resume=signed"
         }
       })
     }),

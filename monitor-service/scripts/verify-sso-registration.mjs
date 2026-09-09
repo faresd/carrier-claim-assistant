@@ -28,10 +28,13 @@ export async function verifyTrackingSsoRegistration({ fetchImpl = fetch } = {}) 
   const locationValue = response.headers.get("location") || "";
   const loginLocation = locationValue ? new URL(locationValue, AUTH_ORIGIN) : null;
   const requestCookie = response.headers.get("set-cookie") || "";
+  const hasInteractionCookie = requestCookie.includes("_interaction=")
+    && requestCookie.includes("_interaction_resume=");
+  const hasLegacyBridgeCookie = requestCookie.includes("__Host-cheaply_sso_request=");
   if (![302, 303].includes(response.status)
     || !loginLocation
     || !TRUSTED_LOGIN_ORIGINS.has(loginLocation.origin)
-    || !requestCookie.includes("__Host-cheaply_sso_request=")) {
+    || (!hasInteractionCookie && !hasLegacyBridgeCookie)) {
     throw new Error(`Cheaply Auth has not accepted the ${clientId} production client registration (HTTP ${response.status}).`);
   }
   return true;
