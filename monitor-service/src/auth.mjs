@@ -1,6 +1,6 @@
 const AUTH_ORIGIN = "https://auth.cheaply.fr";
 const APP_ORIGIN = "https://tracking.cheaply.fr";
-const CLIENT_ID = "tracking-web";
+const DEFAULT_CLIENT_ID = "tracking-web";
 const CALLBACK_URI = `${APP_ORIGIN}/api/auth/callback`;
 const SESSION_COOKIE = "__Host-carrier_monitor_session";
 const REQUEST_COOKIE = "__Host-carrier_monitor_oauth";
@@ -29,6 +29,10 @@ function randomToken(bytes = 32) {
 
 function isStrongSecret(value) {
   return typeof value === "string" && value.length >= 32;
+}
+
+function cheaplyAuthClientId(env = {}) {
+  return String(env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID).trim();
 }
 
 async function hmac(value, secret) {
@@ -106,6 +110,7 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
   if (!isStrongSecret(env.SESSION_SECRET)) {
     return Response.json({ error: "Dashboard SSO is not configured." }, { status: 503, headers: { "cache-control": "no-store" } });
   }
+  const clientId = cheaplyAuthClientId(env);
   const url = new URL(request.url);
   const state = randomToken(32);
   const verifier = randomToken(64);
@@ -117,7 +122,7 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
     exp: now + REQUEST_TTL_SECONDS
   }, env.SESSION_SECRET);
   const authorization = new URL(`${AUTH_ORIGIN}/authorize`);
-  authorization.searchParams.set("client_id", CLIENT_ID);
+  authorization.searchParams.set("client_id", clientId);
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
   authorization.searchParams.set("response_type", "code");
   authorization.searchParams.set("state", state);
@@ -137,29 +142,29 @@ function audienceIncludes(audience, expected) {
 export async function verifyCentralIdToken(token, {
   now = Math.floor(Date.now() / 1000),
   fetchImpl = fetch,
-  expectedAudience = CLIENT_ID
+  expectedAudience = DEFAULT_CLIENT_ID
 } = {}) {
   const [encodedHeader, encodedPayload, encodedSignature, extra] = String(token || "").split(".");
   if (!encodedHeader || !encodedPayload || !encodedSignature || extra) throw new Error("Invalid SSO token format.");
   const header = decodeJsonPart(encodedHeader);
   const claims = decodeJsonPart(encodedPayload);
-  if (header.alg !== "RS256" || !header.kid) throw new Error("Unsupported SSO signing key.");
-  const jwksResponse = await fetchImpl(`${AUTH_ORIGIN}/.well-known/jwks.json`, {
+  if (header.alg !== "ES256" || !header.kid) throw new Error("Unsupported Cheaply Auth signing key.");
+  const jwksResponse = await fetchImpl(`${AUTH_ORIGIN}/jwks.json`, {
     headers: { accept: "application/json" }
   });
-  if (!jwksResponse.ok) throw new Error("Unable to load the Cheaply SSO signing keys.");
+  if (!jwksResponse.ok) throw new Error("Unable to load the Cheaply Auth signing keys.");
   const jwks = await jwksResponse.json();
-  const jwk = Array.isArray(jwks?.keys) ? jwks.keys.find((candidate) => candidate?.kid === header.kid && candidate?.kty === "RSA") : null;
-  if (!jwk) throw new Error("The Cheaply SSO signing key is unknown.");
+  const jwk = Array.isArray(jwks?.keys) ? jwks.keys.find((candidate) => candidate?.kid === header.kid && candidate?.kty === "EC" && candidate?.crv === "P-256") : null;
+  if (!jwk) throw new Error("The Cheaply Auth signing key is unknown.");
   const key = await crypto.subtle.importKey(
     "jwk",
     jwk,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    { name: "ECDSA", namedCurve: "P-256" },
     false,
     ["verify"]
   );
   const validSignature = await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
+    { name: "ECDSA", hash: "SHA-256" },
     key,
     base64UrlDecode(encodedSignature),
     encoder.encode(`${encodedHeader}.${encodedPayload}`)
@@ -197,7 +202,7 @@ export async function finishDashboardLogin(request, env, {
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: CLIENT_ID,
+      client_id: cheaplyAuthClientId(env),
       client_secret: env.TRACKING_CLIENT_SECRET,
       redirect_uri: CALLBACK_URI,
       code: url.searchParams.get("code"),
@@ -206,7 +211,7 @@ export async function finishDashboardLogin(request, env, {
   });
   const tokenPayload = await tokenResponse.json().catch(() => ({}));
   if (!tokenResponse.ok || !tokenPayload.id_token) throw new Error("Cheaply SSO did not accept the authorization code.");
-  const claims = await verifyCentralIdToken(tokenPayload.id_token, { now, fetchImpl });
+  const claims = await verifyCentralIdToken(tokenPayload.id_token, { now, fetchImpl, expectedAudience: cheaplyAuthClientId(env) });
   if (!identityMayAdmin(claims, env)) throw new Error("This Cheaply account does not have tracking administrator access.");
   const session = await signAuthPayload({
     sub: String(claims.sub),
@@ -283,7 +288,7 @@ export async function handleDashboardAuth(request, env, url) {
 export const dashboardAuthConfig = Object.freeze({
   authOrigin: AUTH_ORIGIN,
   appOrigin: APP_ORIGIN,
-  clientId: CLIENT_ID,
+  clientId: DEFAULT_CLIENT_ID,
   callbackUri: CALLBACK_URI,
   sessionCookie: SESSION_COOKIE,
   requestCookie: REQUEST_COOKIE

@@ -11,6 +11,6 @@
     "code"
   ],
   "pkce_method": "S256",
-  "id_token_signing_alg": "RS256",
+  "id_token_signing_alg": "ES256",
   "client_secret_binding": "TRACKING_CLIENT_SECRET"
 }

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const AUTH_ORIGIN = "https://auth.cheaply.fr";
-const CLIENT_ID = "tracking-web";
+const DEFAULT_CLIENT_ID = "tracking-web";
 const CALLBACK_URI = "https://tracking.cheaply.fr/api/auth/callback";
 const TRUSTED_LOGIN_ORIGINS = new Set([AUTH_ORIGIN, "https://mail.cheaply.fr"]);
 
@@ -11,9 +11,10 @@ function base64Url(value) {
 }
 
 export async function verifyTrackingSsoRegistration({ fetchImpl = fetch } = {}) {
+  const clientId = String(process.env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID).trim();
   const verifier = base64Url(randomBytes(48));
   const authorization = new URL("/authorize", AUTH_ORIGIN);
-  authorization.searchParams.set("client_id", CLIENT_ID);
+  authorization.searchParams.set("client_id", clientId);
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
   authorization.searchParams.set("response_type", "code");
   authorization.searchParams.set("state", base64Url(randomBytes(32)));
@@ -31,7 +32,7 @@ export async function verifyTrackingSsoRegistration({ fetchImpl = fetch } = {}) 
     || !loginLocation
     || !TRUSTED_LOGIN_ORIGINS.has(loginLocation.origin)
     || !requestCookie.includes("__Host-cheaply_sso_request=")) {
-    throw new Error(`Cheaply SSO has not accepted the ${CLIENT_ID} production client registration (HTTP ${response.status}).`);
+    throw new Error(`Cheaply Auth has not accepted the ${clientId} production client registration (HTTP ${response.status}).`);
   }
   return true;
 }
@@ -39,7 +40,7 @@ export async function verifyTrackingSsoRegistration({ fetchImpl = fetch } = {}) 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     await verifyTrackingSsoRegistration();
-    console.log("Cheaply SSO tracking-web registration is ready.");
+    console.log(`Cheaply Auth ${process.env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID} registration is ready.`);
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

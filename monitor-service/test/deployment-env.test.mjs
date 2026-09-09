@@ -8,7 +8,8 @@ const valid = {
   CF_API_TOKEN: "cloudflare-token-with-sufficient-length",
   LAPOSTE_OKAPI_KEY: "okapi-key",
   MONITOR_SESSION_SECRET: "session-secret-that-is-longer-than-thirty-two-characters",
-  MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two"
+  MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two",
+  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001"
 };
 
 test("accepts a complete production deployment configuration", () => {
@@ -30,11 +31,13 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
     CF_API_TOKEN: "short",
     LAPOSTE_OKAPI_KEY: "short",
     MONITOR_SESSION_SECRET: shared,
-    MONITOR_TRACKING_CLIENT_SECRET: shared
+    MONITOR_TRACKING_CLIENT_SECRET: shared,
+    CHEAPLY_AUTH_CLIENT_ID: "tracking-web"
   });
   assert.ok(errors.some((error) => error.includes("32-character Cloudflare")));
   assert.ok(errors.some((error) => error.includes("D1 database UUID")));
   assert.ok(errors.some((error) => error.includes("CF_API_TOKEN appears incomplete")));
   assert.ok(errors.some((error) => error.includes("LAPOSTE_OKAPI_KEY appears incomplete")));
+  assert.ok(errors.some((error) => error.includes("CHEAPLY_AUTH_CLIENT_ID")));
   assert.ok(errors.some((error) => error.includes("Use different values")));
 });
