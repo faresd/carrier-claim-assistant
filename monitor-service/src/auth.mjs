@@ -125,6 +125,7 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
   authorization.searchParams.set("client_id", clientId);
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
   authorization.searchParams.set("response_type", "code");
+  authorization.searchParams.set("scope", "openid email profile roles");
   authorization.searchParams.set("state", state);
   authorization.searchParams.set("code_challenge", await pkceChallenge(verifier));
   authorization.searchParams.set("code_challenge_method", "S256");
@@ -172,6 +173,7 @@ export async function verifyCentralIdToken(token, {
   if (!validSignature) throw new Error("The Cheaply SSO signature is invalid.");
   if (claims.iss !== AUTH_ORIGIN || !audienceIncludes(claims.aud, expectedAudience)) throw new Error("The Cheaply SSO token was issued for another application.");
   if (!Number.isFinite(claims.exp) || claims.exp <= now || (Number.isFinite(claims.iat) && claims.iat > now + 60)) throw new Error("The Cheaply SSO token is expired or not active.");
+  if (claims.role === "member") claims.role = "employee";
   if (!claims.sub || !/^[^\s@]+@[^\s@]+$/.test(String(claims.email || "")) || !["admin", "employee"].includes(claims.role)) {
     throw new Error("The Cheaply SSO identity is incomplete.");
   }
