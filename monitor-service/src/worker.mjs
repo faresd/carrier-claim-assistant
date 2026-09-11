@@ -137,6 +137,19 @@ function secureAssetHeaders(headers) {
   return next;
 }
 
+function dashboardLoginRecovery(signedOut) {
+  // This static page contains no dashboard data or scripts. Never automatically
+  // restart OAuth after a callback error or explicit logout: an existing provider
+  // session would otherwise create an infinite authorize/callback redirect loop.
+  const message = signedOut
+    ? "You are signed out of Carrier Return Monitor. Your other applications remain connected."
+    : "Sign-in did not complete, or this account is not a tracking administrator. You can retry or choose another account.";
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Carrier Return Monitor</title></head><body><main><p>CHEAPLY · CARRIER CLAIM ASSISTANT</p><h1>${signedOut ? "You are signed out" : "Sign-in needs attention"}</h1><p>${message}</p><p><a href="/api/auth/login?return_to=%2F">Continue with Cheaply Auth</a></p><p><a href="/api/auth/login?return_to=%2F&amp;prompt=select_account">Choose another account</a></p><p>You can use the existing Mail account option on Cheaply Auth. No password change is required.</p></main></body></html>`, {
+    status: 200,
+    headers: secureAssetHeaders({ "content-type": "text/html; charset=utf-8" }),
+  });
+}
+
 function bearer(request) {
   return request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || "";
 }
@@ -1271,6 +1284,11 @@ export default {
     const authResponse = await handleDashboardAuth(request, env, url);
     if (authResponse) return authResponse;    
     if (url.pathname.startsWith("/api/")) return api(request, env, url);
+    if (url.pathname === "/" && ["GET", "HEAD"].includes(request.method)
+      && (url.searchParams.has("auth_error") || url.searchParams.has("signed_out"))) {
+      const response = dashboardLoginRecovery(url.searchParams.has("signed_out"));
+      return request.method === "HEAD" ? new Response(null, response) : response;
+    }
     const dashboardAuth = await dashboardAdminAuth(request, env);
     if (!dashboardAuth.authorized) {
       if (!["GET", "HEAD"].includes(request.method)) {

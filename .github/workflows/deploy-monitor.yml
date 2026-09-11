@@ -24,6 +24,8 @@ concurrency:
 
 jobs:
   test-and-deploy:
+    # Auth-only repairs use deploy-monitor-auth-hotfix.yml, which never resyncs secrets.
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[auth-hotfix]')
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
