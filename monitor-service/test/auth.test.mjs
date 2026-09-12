@@ -16,6 +16,7 @@ import {
 
 const SESSION_SECRET = "session-secret-that-is-longer-than-thirty-two-characters";
 const CLIENT_SECRET = "client-secret-that-is-longer-than-thirty-two-characters";
+const CHEAPLY_AUTH_CLIENT_ID = "ca_tracking_web_client_0001";
 const encoder = new TextEncoder();
 
 const registration = JSON.parse(await readFile(
@@ -32,20 +33,18 @@ function base64Url(value) {
 
 async function signingFixture() {
   const pair = await crypto.subtle.generateKey({
-    name: "RSASSA-PKCS1-v1_5",
-    modulusLength: 2048,
-    publicExponent: new Uint8Array([1, 0, 1]),
-    hash: "SHA-256"
+    name: "ECDSA",
+    namedCurve: "P-256"
   }, true, ["sign", "verify"]);
   const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
   publicJwk.kid = "test-key";
-  publicJwk.alg = "RS256";
+  publicJwk.alg = "ES256";
   publicJwk.use = "sig";
   const sign = async (claims) => {
-    const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT", kid: publicJwk.kid }));
+    const header = base64Url(JSON.stringify({ alg: "ES256", typ: "JWT", kid: publicJwk.kid }));
     const payload = base64Url(JSON.stringify(claims));
     const input = `${header}.${payload}`;
-    const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, encoder.encode(input));
+    const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, encoder.encode(input));
     return `${input}.${base64Url(signature)}`;
   };
   return { publicJwk, sign };
@@ -65,7 +64,7 @@ test("keeps the dashboard implementation aligned with the central SSO registrati
   assert.deepEqual(registration.grant_types, ["authorization_code"]);
   assert.deepEqual(registration.response_types, ["code"]);
   assert.equal(registration.pkce_method, "S256");
-  assert.equal(registration.id_token_signing_alg, "RS256");
+  assert.equal(registration.id_token_signing_alg, "ES256");
   assert.equal(registration.client_secret_binding, "TRACKING_CLIENT_SECRET");
 });
 
@@ -79,12 +78,12 @@ test("signs short-lived auth payloads and rejects tampering or expiry", async ()
 test("starts the same PKCE authorization-code flow used by Presence", async () => {
   const response = await beginDashboardLogin(new Request(
     "https://tracking.cheaply.fr/api/auth/login?return_to=%2F%3Fview%3Dreturned"
-  ), { SESSION_SECRET }, 10_000);
+  ), { SESSION_SECRET, CHEAPLY_AUTH_CLIENT_ID }, 10_000);
   assert.equal(response.status, 302);
   const destination = new URL(response.headers.get("location"));
   assert.equal(destination.origin, "https://auth.cheaply.fr");
   assert.equal(destination.pathname, "/authorize");
-  assert.equal(destination.searchParams.get("client_id"), "tracking-web");
+  assert.equal(destination.searchParams.get("client_id"), CHEAPLY_AUTH_CLIENT_ID);
   assert.equal(destination.searchParams.get("redirect_uri"), "https://tracking.cheaply.fr/api/auth/callback");
   assert.equal(destination.searchParams.get("response_type"), "code");
   assert.equal(destination.searchParams.get("code_challenge_method"), "S256");
@@ -98,16 +97,16 @@ test("starts the same PKCE authorization-code flow used by Presence", async () =
   assert.equal(pending.state, destination.searchParams.get("state"));
 });
 
-test("verifies central RS256/JWKS identity assertions and rejects another audience", async () => {
+test("verifies central ES256/JWKS identity assertions and rejects another audience", async () => {
   const fixture = await signingFixture();
   const now = 50_000;
   const fetchImpl = async (url) => {
-    assert.equal(url, "https://auth.cheaply.fr/.well-known/jwks.json");
+    assert.equal(url, "https://auth.cheaply.fr/jwks.json");
     return Response.json({ keys: [fixture.publicJwk] });
   };
   const claims = {
     iss: "https://auth.cheaply.fr",
-    aud: "tracking-web",
+    aud: CHEAPLY_AUTH_CLIENT_ID,
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
@@ -115,10 +114,10 @@ test("verifies central RS256/JWKS identity assertions and rejects another audien
     iat: now,
     exp: now + 300
   };
-  const verified = await verifyCentralIdToken(await fixture.sign(claims), { now, fetchImpl });
+  const verified = await verifyCentralIdToken(await fixture.sign(claims), { now, fetchImpl, expectedAudience: CHEAPLY_AUTH_CLIENT_ID });
   assert.equal(verified.email, "owner@example.com");
   await assert.rejects(
-    verifyCentralIdToken(await fixture.sign({ ...claims, aud: "presence-web" }), { now, fetchImpl }),
+    verifyCentralIdToken(await fixture.sign({ ...claims, aud: "presence-web" }), { now, fetchImpl, expectedAudience: CHEAPLY_AUTH_CLIENT_ID }),
     /another application/
   );
 });
@@ -131,7 +130,7 @@ test("exchanges the one-time code and creates a secure local dashboard session",
   const pending = await signAuthPayload({ state, verifier, returnTo: "/?view=lost", exp: now + 600 }, SESSION_SECRET);
   const idToken = await fixture.sign({
     iss: "https://auth.cheaply.fr",
-    aud: "tracking-web",
+    aud: CHEAPLY_AUTH_CLIENT_ID,
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
@@ -143,18 +142,18 @@ test("exchanges the one-time code and creates a secure local dashboard session",
     if (url === "https://auth.cheaply.fr/token") {
       const form = new URLSearchParams(options.body);
       assert.equal(form.get("grant_type"), "authorization_code");
-      assert.equal(form.get("client_id"), "tracking-web");
+      assert.equal(form.get("client_id"), CHEAPLY_AUTH_CLIENT_ID);
       assert.equal(form.get("client_secret"), CLIENT_SECRET);
       assert.equal(form.get("code_verifier"), verifier);
       return Response.json({ id_token: idToken, token_type: "Bearer", expires_in: 300 });
     }
-    assert.equal(url, "https://auth.cheaply.fr/.well-known/jwks.json");
+    assert.equal(url, "https://auth.cheaply.fr/jwks.json");
     return Response.json({ keys: [fixture.publicJwk] });
   };
   const response = await finishDashboardLogin(new Request(
     `https://tracking.cheaply.fr/api/auth/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
     { headers: { cookie: `${dashboardAuthConfig.requestCookie}=${pending}` } }
-  ), { SESSION_SECRET, TRACKING_CLIENT_SECRET: CLIENT_SECRET }, { now, fetchImpl });
+  ), { SESSION_SECRET, TRACKING_CLIENT_SECRET: CLIENT_SECRET, CHEAPLY_AUTH_CLIENT_ID }, { now, fetchImpl });
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "/?view=lost");
   const cookies = response.headers.get("set-cookie");

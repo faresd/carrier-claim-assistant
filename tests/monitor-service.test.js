@@ -150,9 +150,9 @@ test("dashboard assets are protected by a restrictive browser security policy", 
 
 test("dashboard reuses Cheaply SSO with PKCE, signed sessions, JWKS, and CSRF", () => {
   assert.match(auth, /AUTH_ORIGIN = "https:\/\/auth\.cheaply\.fr"/);
-  assert.match(auth, /CLIENT_ID = "tracking-web"/);
+  assert.match(auth, /CHEAPLY_AUTH_CLIENT_ID/);
   assert.match(auth, /code_challenge_method", "S256"/);
-  assert.match(auth, /RSASSA-PKCS1-v1_5/);
+  assert.match(auth, /ECDSA/);
   assert.match(auth, /__Host-carrier_monitor_session/);
   assert.match(auth, /x-csrf-token/);
   assert.match(worker, /handleDashboardAuth/);
@@ -178,7 +178,7 @@ test("monitor deployment fails before mutation when required production configur
   const laposteIndex = deployment.indexOf("Verify La Poste Suivi v2 access");
   const migrationIndex = deployment.indexOf("Apply database migrations");
   assert.ok(validationIndex > 0 && validationIndex < ssoIndex && ssoIndex < laposteIndex && laposteIndex < migrationIndex);
-  for (const name of ["CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN", "LAPOSTE_OKAPI_KEY", "MONITOR_SESSION_SECRET", "MONITOR_TRACKING_CLIENT_SECRET"]) {
+  for (const name of ["CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN", "LAPOSTE_OKAPI_KEY", "MONITOR_SESSION_SECRET", "MONITOR_TRACKING_CLIENT_SECRET", "CHEAPLY_AUTH_CLIENT_ID"]) {
     assert.match(deployment, new RegExp(name));
     assert.match(deploymentValidator, new RegExp(name));
   }
@@ -186,7 +186,7 @@ test("monitor deployment fails before mutation when required production configur
   assert.doesNotMatch(deploymentValidator, /console\.(?:log|error)\([^\n]*(?:apiToken|okapiKey|sessionSecret|trackingSecret)/);
   assert.match(deployment, /node monitor-service\/scripts\/verify-sso-registration\.mjs/);
   assert.match(ssoPreflight, /client_id/);
-  assert.match(ssoPreflight, /tracking-web/);
+  assert.match(ssoPreflight, /CHEAPLY_AUTH_CLIENT_ID/);
   assert.match(ssoPreflight, /code_challenge_method/);
   assert.match(ssoPreflight, /S256/);
   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);

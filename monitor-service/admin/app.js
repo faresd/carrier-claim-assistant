@@ -459,11 +459,18 @@
 
   document.getElementById("sso-sign-in").addEventListener("click", startLogin);
   document.getElementById("logout").addEventListener("click", async (event) => {
-    event.currentTarget.disabled = true;
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     try {
-      await api("/api/auth/logout", { method: "POST", body: "{}" });
-    } finally {
+      const result = await api("/api/auth/logout", {
+        method: "POST", body: "{}", redirect: "manual", signal: AbortSignal.timeout(12000)
+      });
+      if (result?.ok !== true) throw new Error("Sign-out was not confirmed");
       location.replace("/?signed_out=1");
+    } catch {
+      button.disabled = false;
+      notify("Sign-out could not be confirmed. Please try again or reload the page.");
     }
   });
 

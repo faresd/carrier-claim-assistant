@@ -1,9 +1,11 @@
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_ORIGIN = "https://tracking.cheaply.fr";
+const DEFAULT_CLIENT_ID = "tracking-web";
 
 async function verifyOnce(origin, fetchImpl) {
   const allowPending = process.env.MONITOR_ALLOW_PENDING === "true";
+  const clientId = String(process.env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID).trim();
   const health = await fetchImpl(`${origin}/api/health`, { redirect: "manual", headers: { accept: "application/json" } });
   const healthPayload = await health.json().catch(() => ({}));
   const pendingHealth = allowPending && health.status === 503 && healthPayload.ok === false && healthPayload.ready === false;
@@ -15,7 +17,7 @@ async function verifyOnce(origin, fetchImpl) {
   const dashboardLocation = new URL(dashboard.headers.get("location") || "", origin);
   const dashboardCookie = dashboard.headers.get("set-cookie") || "";
   if (dashboard.status !== 302 || dashboardLocation.origin !== "https://auth.cheaply.fr" || dashboardLocation.pathname !== "/authorize" ||
-    dashboardLocation.searchParams.get("client_id") !== "tracking-web" || dashboardLocation.searchParams.get("code_challenge_method") !== "S256" ||
+    dashboardLocation.searchParams.get("client_id") !== clientId || dashboardLocation.searchParams.get("code_challenge_method") !== "S256" ||
     !dashboardCookie.includes("__Host-carrier_monitor_oauth=")) {
     throw new Error(`Unauthenticated dashboard access is not redirecting through Cheaply SSO (HTTP ${dashboard.status}).`);
   }
@@ -39,7 +41,7 @@ async function verifyOnce(origin, fetchImpl) {
   if (login.status !== 302 || location.origin !== "https://auth.cheaply.fr" || location.pathname !== "/authorize") {
     throw new Error("Cheaply SSO authorization redirect is unavailable.");
   }
-  if (location.searchParams.get("client_id") !== "tracking-web" || location.searchParams.get("code_challenge_method") !== "S256") {
+  if (location.searchParams.get("client_id") !== clientId || location.searchParams.get("code_challenge_method") !== "S256") {
     throw new Error("Cheaply SSO authorization parameters are incomplete.");
   }
   return true;

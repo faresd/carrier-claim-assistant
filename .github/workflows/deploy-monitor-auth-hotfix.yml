@@ -1,0 +1,71 @@
+name: Deploy monitor auth-only hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "monitor-service/**"
+      - ".github/workflows/deploy-monitor-auth-hotfix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: carrier-return-monitor-production
+  cancel-in-progress: false
+
+jobs:
+  verify-and-deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[auth-hotfix]'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test monitor and authentication regressions
+        run: npm --prefix monitor-service test
+      - name: Set existing non-secret resource identifiers
+        env:
+          HOTFIX_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          HOTFIX_D1_ID: ${{ vars.CF_D1_DATABASE_ID }}
+          HOTFIX_CLIENT_ID: ${{ vars.CHEAPLY_AUTH_CLIENT_ID }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const db = process.env.HOTFIX_D1_ID;
+          const client = process.env.HOTFIX_CLIENT_ID;
+          if (process.env.HOTFIX_ACCOUNT_ID !== 'ddf47ffd1e2859bf7206e09a76be07ae') throw new Error('Unexpected existing Cloudflare account');
+          if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(db || '')) throw new Error('Missing valid existing D1 identifier');
+          if (db !== '3f2f6bbd-2d96-40b4-9f82-ed09a40a61a8') throw new Error('D1 differs from verified production binding');
+          if (client !== 'ca_tracking_web_client_0001') throw new Error('Unexpected existing tracking client identifier');
+          const path = 'monitor-service/wrangler.toml';
+          const config = fs.readFileSync(path, 'utf8');
+          if (!config.includes('REPLACE_WITH_D1_DATABASE_ID') || !config.includes('REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID')) throw new Error('Unexpected deployment template');
+          fs.writeFileSync(path, config.replace('REPLACE_WITH_D1_DATABASE_ID', db).replace('REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID', client));
+          NODE
+      - name: Deploy code and assets while preserving existing secrets and variables
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ vars.CF_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          workingDirectory: monitor-service
+          command: deploy --keep-vars --strict
+      - name: Verify live recovery and private API boundary
+        run: |
+          node --input-type=module <<'NODE'
+          const base = 'https://tracking.cheaply.fr';
+          for (const query of ['?auth_error=sso', '?signed_out=1']) {
+            const response = await fetch(base + '/' + query, { redirect: 'manual' });
+            const body = await response.text();
+            if (response.status !== 200 || response.headers.has('location') || !body.includes('Continue with Cheaply Auth') || body.includes('orders-body')) throw new Error('Recovery page verification failed');
+          }
+          const orders = await fetch(base + '/api/orders', { redirect: 'manual' });
+          if (orders.status !== 401) throw new Error('Private order boundary verification failed');
+          const login = await fetch(base + '/api/auth/login', { redirect: 'manual' });
+          const destination = new URL(login.headers.get('location') || base);
+          if (login.status !== 302 || destination.origin !== 'https://auth.cheaply.fr' || destination.pathname !== '/authorize' || destination.searchParams.get('client_id') !== 'ca_tracking_web_client_0001' || destination.searchParams.get('code_challenge_method') !== 'S256' || !destination.searchParams.get('nonce')) throw new Error('OIDC login verification failed');
+          console.log('Recovery, private API, PKCE and nonce checks passed; no credentials or sessions changed.');
+          NODE
