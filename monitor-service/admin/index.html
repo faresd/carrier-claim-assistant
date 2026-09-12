@@ -17,6 +17,7 @@
         </div>
         <div class="topbar__actions">
           <span id="session-label" class="session-label">Checking sign-in…</span>
+          <button id="profile" class="button button--secondary" type="button" hidden>Profile</button>
           <span id="last-sync" class="last-sync">Not connected</span>
           <button id="add-browser" class="button button--secondary" type="button">Add browser</button>
           <button id="export-history" class="button button--secondary" type="button">Export history</button>
@@ -130,6 +131,8 @@
         <footer><button class="button button--secondary" type="button" data-claim-cancel>Cancel</button><button id="claim-submit" class="button" type="submit">Open official claim</button></footer>
       </form>
     </dialog>
+
+    <dialog id="profile-dialog"><form method="dialog" class="dialog-card"><header><h2 id="profile-name">Profile</h2><button class="icon-button" aria-label="Close">×</button></header><div class="profile-content"><p id="profile-email"></p><p id="profile-role"></p><p>Authentication remains compatible with Legacy SSO.</p></div><footer><a class="button button--secondary" href="/api/auth/login?prompt=select_account&return_to=/">Switch account</a><button class="button button--secondary" value="cancel">Close</button></footer></form></dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
     <script src="/app.js"></script>
