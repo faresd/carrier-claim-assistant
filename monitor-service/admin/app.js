@@ -474,7 +474,6 @@
     }
   });
 
-  document.getElementById("profile").addEventListener("click", () => { const user = state.user || {}; document.getElementById("profile-name").textContent = user.name || user.email || "Cheaply account"; document.getElementById("profile-email").textContent = user.email || ""; document.getElementById("profile-role").textContent = `Role: ${user.role || "administrator"}`; document.getElementById("profile-dialog").showModal(); });
   async function start() {
     sessionStorage.removeItem("carrierMonitorAdminToken");
     const params = new URLSearchParams(location.search);
