@@ -503,6 +503,7 @@
     }
   }
 
+  document.getElementById("profile").addEventListener("click", () => { const user = state.user || {}; document.getElementById("profile-name").textContent = user.name || user.email || "Cheaply account"; document.getElementById("profile-email").textContent = user.email || ""; document.getElementById("profile-role").textContent = `Role: `; document.getElementById("profile-dialog").showModal(); });
   setInterval(() => { if (state.authenticated) load(); }, 300000);
   start();
 })();
