@@ -177,18 +177,34 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
   const state = randomToken(32);
   const verifier = randomToken(64);
   const nonce = provider.requiresIdToken ? randomToken(32) : "";
-  const pending = await signAuthPayload({
-    version: 3,
-    provider: provider.id,
-    issuer: provider.issuer,
-    clientId: provider.clientId,
-    state,
-    verifier,
-    ...(nonce ? { nonce } : {}),
-    returnTo: safeReturnTo(url.searchParams.get("return_to")),
-    iat: now,
-    exp: now + REQUEST_TTL_SECONDS
-  }, env.SESSION_SECRET);
+  // Keep the deployed central-auth transaction format intact until the legacy
+  // provider is actually provisioned. This avoids interrupting in-flight and
+  // existing central sign-ins while the dual-provider rollout is staged.
+  const centralCompatibilityTransaction = provider.id === CENTRAL_PROVIDER_ID && !legacyMailProvider(env).configured;
+  const pendingPayload = centralCompatibilityTransaction
+    ? {
+      version: 2,
+      clientId: provider.clientId,
+      state,
+      verifier,
+      nonce,
+      returnTo: safeReturnTo(url.searchParams.get("return_to")),
+      iat: now,
+      exp: now + REQUEST_TTL_SECONDS
+    }
+    : {
+      version: 3,
+      provider: provider.id,
+      issuer: provider.issuer,
+      clientId: provider.clientId,
+      state,
+      verifier,
+      ...(nonce ? { nonce } : {}),
+      returnTo: safeReturnTo(url.searchParams.get("return_to")),
+      iat: now,
+      exp: now + REQUEST_TTL_SECONDS
+    };
+  const pending = await signAuthPayload(pendingPayload, env.SESSION_SECRET);
   const authorization = new URL(provider.issuer + provider.authorizationPath);
   authorization.searchParams.set("client_id", provider.clientId);
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
