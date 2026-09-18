@@ -1,6 +1,9 @@
 const AUTH_ORIGIN = "https://auth.cheaply.fr";
+const LEGACY_MAIL_ORIGIN = "https://mail.cheaply.fr";
 const APP_ORIGIN = "https://tracking.cheaply.fr";
 const DEFAULT_CLIENT_ID = "tracking-web";
+const CENTRAL_PROVIDER_ID = "cheaply-auth";
+const LEGACY_MAIL_PROVIDER_ID = "legacy-mail";
 const CALLBACK_URI = `${APP_ORIGIN}/api/auth/callback`;
 const SESSION_COOKIE = "__Host-carrier_monitor_session";
 const REQUEST_COOKIE = "__Host-carrier_monitor_oauth";
@@ -35,6 +38,52 @@ function isStrongSecret(value) {
 
 function cheaplyAuthClientId(env = {}) {
   return String(env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID).trim();
+}
+
+function legacyMailClientId(env = {}) {
+  return String(env.MAIL_SSO_CLIENT_ID || "").trim();
+}
+
+function centralProvider(env = {}) {
+  const clientId = cheaplyAuthClientId(env);
+  return {
+    id: CENTRAL_PROVIDER_ID,
+    issuer: AUTH_ORIGIN,
+    authorizationPath: "/authorize",
+    tokenPath: "/token",
+    userInfoPath: "/userinfo",
+    clientId,
+    clientSecret: env.TRACKING_CLIENT_SECRET,
+    scope: "openid email profile roles",
+    requiresIdToken: true,
+    configured: Boolean(clientId)
+  };
+}
+
+function legacyMailProvider(env = {}) {
+  const clientId = legacyMailClientId(env);
+  return {
+    id: LEGACY_MAIL_PROVIDER_ID,
+    issuer: LEGACY_MAIL_ORIGIN,
+    authorizationPath: "/oauth/authorize",
+    tokenPath: "/oauth/token",
+    userInfoPath: "/oauth/userinfo",
+    clientId,
+    clientSecret: env.MAIL_SSO_CLIENT_SECRET,
+    scope: "openid email profile mailbox",
+    requiresIdToken: false,
+    configured: Boolean(clientId && isStrongSecret(env.MAIL_SSO_CLIENT_SECRET))
+  };
+}
+
+function dashboardSsoProvider(env = {}, requested = "") {
+  const central = centralProvider(env);
+  const legacy = legacyMailProvider(env);
+  if (requested === CENTRAL_PROVIDER_ID) return central.configured ? central : null;
+  if (requested === LEGACY_MAIL_PROVIDER_ID) return legacy.configured ? legacy : null;
+  // Legacy Mail SSO becomes the default as soon as its client is provisioned.
+  // Before then central Auth remains available; no existing session is changed.
+  return legacy.configured ? legacy : (central.configured ? central : null);
 }
 
 async function hmac(value, secret) {
@@ -116,32 +165,41 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
   if (!isStrongSecret(env.SESSION_SECRET)) {
     return Response.json({ error: "Dashboard SSO is not configured." }, { status: 503, headers: { "cache-control": "no-store" } });
   }
-  const clientId = cheaplyAuthClientId(env);
   const url = new URL(request.url);
+  const requestedProvider = url.searchParams.get("provider") || "";
+  const provider = dashboardSsoProvider(env, requestedProvider);
+  if (!provider) {
+    const error = requestedProvider === LEGACY_MAIL_PROVIDER_ID
+      ? "Legacy Mail SSO is not configured for Carrier Claim Assistant."
+      : "No Carrier Claim Assistant sign-in provider is configured.";
+    return Response.json({ error }, { status: 503, headers: { "cache-control": "no-store" } });
+  }
   const state = randomToken(32);
   const verifier = randomToken(64);
-  const nonce = randomToken(32);
+  const nonce = provider.requiresIdToken ? randomToken(32) : "";
   const pending = await signAuthPayload({
-    version: 2,
-    clientId,
+    version: 3,
+    provider: provider.id,
+    issuer: provider.issuer,
+    clientId: provider.clientId,
     state,
     verifier,
-    nonce,
+    ...(nonce ? { nonce } : {}),
     returnTo: safeReturnTo(url.searchParams.get("return_to")),
     iat: now,
     exp: now + REQUEST_TTL_SECONDS
   }, env.SESSION_SECRET);
-  const authorization = new URL(`${AUTH_ORIGIN}/authorize`);
-  authorization.searchParams.set("client_id", clientId);
+  const authorization = new URL(provider.issuer + provider.authorizationPath);
+  authorization.searchParams.set("client_id", provider.clientId);
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
   authorization.searchParams.set("response_type", "code");
-  authorization.searchParams.set("scope", "openid email profile roles");
+  authorization.searchParams.set("scope", provider.scope);
   authorization.searchParams.set("state", state);
-  authorization.searchParams.set("nonce", nonce);
+  if (nonce) authorization.searchParams.set("nonce", nonce);
   authorization.searchParams.set("code_challenge", await pkceChallenge(verifier));
   authorization.searchParams.set("code_challenge_method", "S256");
   const prompt = url.searchParams.get("prompt");
-  if (["select_account", "login"].includes(prompt)) authorization.searchParams.set("prompt", prompt);
+  if (provider.requiresIdToken && ["select_account", "login"].includes(prompt)) authorization.searchParams.set("prompt", prompt);
   return redirect(authorization.toString(), [cookie(REQUEST_COOKIE, pending, REQUEST_TTL_SECONDS)]);
 }
 
@@ -265,6 +323,18 @@ function completeIdentity(claims, profile, clientId, { legacy = false } = {}) {
   return { sub: claims.sub, email, role, name: typeof profile.name === "string" ? profile.name.slice(0, 160) : "" };
 }
 
+function completeLegacyMailIdentity(profile, clientId) {
+  const email = typeof profile?.email === "string" ? profile.email.trim().toLowerCase() : "";
+  const role = profile?.role === "member" ? "employee" : profile?.role;
+  if (profile?.iss !== LEGACY_MAIL_ORIGIN || !audienceIncludes(profile?.aud, clientId)
+    || typeof profile?.sub !== "string" || !profile.sub || profile.sub.length > 255
+    || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254
+    || profile.email_verified !== true || !["admin", "employee"].includes(role)) {
+    throw new Error("The Legacy Mail SSO identity is incomplete or unverified.");
+  }
+  return { sub: profile.sub, email, role, name: typeof profile.name === "string" ? profile.name.slice(0, 160) : "" };
+}
+
 function configuredAdminEmails(env) {
   return new Set(String(env.TRACKING_ADMIN_EMAILS || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 }
@@ -278,55 +348,87 @@ export async function finishDashboardLogin(request, env, {
   now = Math.floor(Date.now() / 1000),
   fetchImpl = fetch
 } = {}) {
-  if (!isStrongSecret(env.SESSION_SECRET) || !isStrongSecret(env.TRACKING_CLIENT_SECRET)) {
-    throw new Error("Dashboard SSO secrets are not configured.");
-  }
+  if (!isStrongSecret(env.SESSION_SECRET)) throw new Error("Dashboard SSO secrets are not configured.");
   const url = new URL(request.url);
   const pending = await verifyAuthPayload(getCookie(request, REQUEST_COOKIE), env.SESSION_SECRET, now);
-  const legacyPending = pending && pending.version === undefined && pending.nonce === undefined && pending.clientId === undefined;
+  const oldCentralPending = pending && pending.version === undefined && pending.nonce === undefined && pending.clientId === undefined;
+  const centralV2Pending = pending && pending.version === 2 && typeof pending.nonce === "string" && typeof pending.clientId === "string";
+  const providerV3Pending = pending && pending.version === 3 && typeof pending.provider === "string" && typeof pending.issuer === "string" && typeof pending.clientId === "string";
   if (!pending || typeof pending.state !== "string" || !pending.state || !constantTimeEqual(pending.state, url.searchParams.get("state"))
     || typeof pending.verifier !== "string" || !/^[A-Za-z0-9._~-]{43,128}$/.test(pending.verifier)
     || !url.searchParams.get("code") || url.searchParams.get("error")
-    || (!legacyPending && (pending.version !== 2 || typeof pending.nonce !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(pending.nonce)
-      || typeof pending.clientId !== "string" || !pending.clientId))
+    || (!oldCentralPending && !centralV2Pending && !providerV3Pending)
     || (pending.iat !== undefined && (!Number.isFinite(pending.iat) || pending.iat > now + 60 || pending.exp - pending.iat > REQUEST_TTL_SECONDS))) {
     throw new Error("The SSO request is invalid or expired.");
   }
-  const clientId = legacyPending ? cheaplyAuthClientId(env) : pending.clientId;
-  const tokenPayload = await providerJson(`${AUTH_ORIGIN}/token`, {
+
+  let provider;
+  if (providerV3Pending) {
+    provider = dashboardSsoProvider(env, pending.provider);
+    if (!provider || provider.id !== pending.provider || provider.issuer !== pending.issuer || provider.clientId !== pending.clientId) {
+      throw new Error("The selected SSO provider is no longer configured for this application.");
+    }
+    if (provider.requiresIdToken !== (typeof pending.nonce === "string" && /^[A-Za-z0-9_-]{43}$/.test(pending.nonce))) {
+      throw new Error("The SSO request is invalid or expired.");
+    }
+  } else {
+    // Preserve already-started central-Auth transactions from before this rollout.
+    provider = centralProvider(env);
+    if (!provider.configured) throw new Error("Dashboard SSO secrets are not configured.");
+    if (centralV2Pending) provider = { ...provider, clientId: pending.clientId };
+    if (centralV2Pending && !/^[A-Za-z0-9_-]{43}$/.test(pending.nonce)) throw new Error("The SSO request is invalid or expired.");
+  }
+
+  const tokenPayload = await providerJson(provider.issuer + provider.tokenPath, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: clientId,
-      client_secret: env.TRACKING_CLIENT_SECRET,
+      client_id: provider.clientId,
+      client_secret: provider.clientSecret,
       redirect_uri: CALLBACK_URI,
       code: url.searchParams.get("code"),
       code_verifier: pending.verifier
     })
   }, fetchImpl);
-  if (!tokenPayload.id_token) throw new Error("Cheaply SSO did not accept the authorization code.");
   const accessToken = tokenPayload.access_token;
-  const idClaims = await verifyCentralIdToken(tokenPayload.id_token, { now, fetchImpl, expectedAudience: clientId,
-    expectedNonce: legacyPending ? undefined : pending.nonce, accessToken });
+  const hasAccessToken = typeof accessToken === "string" && accessToken && accessToken.length <= 16_384
+    && !/[\s\x00-\x1f\x7f]/.test(accessToken) && String(tokenPayload.token_type || "").toLowerCase() === "bearer";
+
   let claims;
-  if (typeof accessToken === "string" && accessToken && accessToken.length <= 16_384 && !/[\s\x00-\x1f\x7f]/.test(accessToken)
-    && String(tokenPayload.token_type || "").toLowerCase() === "bearer") {
-    const profile = await providerJson(`${AUTH_ORIGIN}/userinfo`, { headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" } }, fetchImpl);
-    claims = completeIdentity(idClaims, profile, clientId);
-  } else if (legacyPending && accessToken === undefined) {
-    // Only an already-started, signed pre-upgrade PKCE transaction may use
-    // the old rich JWT contract. A failed UserInfo request never downgrades.
-    claims = completeIdentity(idClaims, idClaims, clientId, { legacy: true });
+  if (provider.requiresIdToken && oldCentralPending && accessToken === undefined && tokenPayload.id_token) {
+    // A signed transaction that began before the UserInfo upgrade retains the
+    // earlier rich-ID-token contract. New flows never downgrade this way.
+    const idClaims = await verifyCentralIdToken(tokenPayload.id_token, {
+      now, fetchImpl, expectedAudience: provider.clientId, expectedNonce: undefined
+    });
+    claims = completeIdentity(idClaims, idClaims, provider.clientId, { legacy: true });
   } else {
-    throw new Error("The Cheaply SSO access token is missing or invalid.");
+    if (!hasAccessToken) throw new Error("The Cheaply SSO access token is missing or invalid.");
+    if (provider.requiresIdToken) {
+      if (!tokenPayload.id_token) throw new Error("Cheaply SSO did not accept the authorization code.");
+      const idClaims = await verifyCentralIdToken(tokenPayload.id_token, {
+        now,
+        fetchImpl,
+        expectedAudience: provider.clientId,
+        expectedNonce: providerV3Pending ? pending.nonce : (centralV2Pending ? pending.nonce : undefined),
+        accessToken
+      });
+      const profile = await providerJson(provider.issuer + provider.userInfoPath, { headers: { authorization: "Bearer " + accessToken, accept: "application/json" } }, fetchImpl);
+      claims = completeIdentity(idClaims, profile, provider.clientId);
+    } else {
+      const profile = await providerJson(provider.issuer + provider.userInfoPath, { headers: { authorization: "Bearer " + accessToken, accept: "application/json" } }, fetchImpl);
+      claims = completeLegacyMailIdentity(profile, provider.clientId);
+    }
   }
+
   if (!identityMayAdmin(claims, env)) throw new Error("This Cheaply account does not have tracking administrator access.");
   const session = await signAuthPayload({
     sub: String(claims.sub),
     email: String(claims.email).toLowerCase(),
     role: String(claims.role),
     name: String(claims.name || ""),
+    provider: provider.id,
     jti: randomToken(18),
     iat: now,
     exp: now + SESSION_TTL_SECONDS
@@ -375,7 +477,7 @@ export async function handleDashboardAuth(request, env, url) {
     if (!session) return Response.json({ error: "Unauthorized" }, { status: 401, headers: { "cache-control": "no-store" } });
     return Response.json({
       ok: true,
-      user: { sub: session.sub, email: session.email, role: "admin", name: session.name || session.email },
+      user: { sub: session.sub, email: session.email, role: "admin", name: session.name || session.email, provider: session.provider || CENTRAL_PROVIDER_ID },
       csrfToken: await csrfTokenForSession(session, env.SESSION_SECRET)
     }, { headers: { "cache-control": "no-store" } });
   }
@@ -397,6 +499,8 @@ export async function handleDashboardAuth(request, env, url) {
 
 export const dashboardAuthConfig = Object.freeze({
   authOrigin: AUTH_ORIGIN,
+  legacyMailOrigin: LEGACY_MAIL_ORIGIN,
+  defaultProvider: LEGACY_MAIL_PROVIDER_ID,
   appOrigin: APP_ORIGIN,
   clientId: DEFAULT_CLIENT_ID,
   callbackUri: CALLBACK_URI,
