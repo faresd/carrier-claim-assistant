@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createCarrierProfileSessionVault, ensureCarrierProfileVaultSchema } from "../src/profile-session-vault.mjs";
+import { readFileSync } from "node:fs";
+import { createCarrierProfileSessionVault } from "../src/profile-session-vault.mjs";
+
+const migration = readFileSync(new URL("../migrations/0007_profile_sessions.sql", import.meta.url), "utf8");
 
 const key = Buffer.alloc(32, 3).toString("base64url");
 const hmacKey = Buffer.alloc(32, 5).toString("base64url");
@@ -42,10 +45,15 @@ class MemoryD1 {
 
 function vault(db) { return createCarrierProfileSessionVault(db, { encryptionKey: key, hmacKey }); }
 
+test("schema provisioning is migration-only and additive", () => {
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS carrier_profile_sessions/);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_browser/);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_expiry/);
+});
+
+
 test("vault stores encrypted browser-bound records and does not expose session material in lists", async () => {
   const db = new MemoryD1();
-  await ensureCarrierProfileVaultSchema(db);
-  assert.equal(db.statements.length, 3);
   const store = vault(db);
   const saved = await store.save({ browserId: "browser-a", subjectId: "subject-a", session: "secret-session", metadata: { email: "person@cheaply.fr", name: "Person", provider: "legacy-mail" }, expiresAt: 2000, now: 1000 });
   const raw = db.rows.get(saved.id);
