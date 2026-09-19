@@ -41,3 +41,31 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
   assert.ok(errors.some((error) => error.includes("CHEAPLY_AUTH_CLIENT_ID")));
   assert.ok(errors.some((error) => error.includes("Use different values")));
 });
+
+
+test("validates optional Legacy Mail SSO as an independent paired credential", () => {
+  const legacySecret = "legacy-mail-secret-that-is-longer-than-thirty-two";
+  assert.deepEqual(validateDeploymentEnvironment({
+    ...valid,
+    MAIL_SSO_CLIENT_ID: "cm_sso_carrier_legacy_0001",
+    MAIL_SSO_CLIENT_SECRET: legacySecret
+  }), []);
+
+  const idOnly = validateDeploymentEnvironment({ ...valid, MAIL_SSO_CLIENT_ID: "cm_sso_carrier_legacy_0001" });
+  const secretOnly = validateDeploymentEnvironment({ ...valid, MAIL_SSO_CLIENT_SECRET: legacySecret });
+  const shortSecret = validateDeploymentEnvironment({
+    ...valid,
+    MAIL_SSO_CLIENT_ID: "cm_sso_carrier_legacy_0001",
+    MAIL_SSO_CLIENT_SECRET: "too-short"
+  });
+  const reusedSecret = validateDeploymentEnvironment({
+    ...valid,
+    MAIL_SSO_CLIENT_ID: "cm_sso_carrier_legacy_0001",
+    MAIL_SSO_CLIENT_SECRET: valid.MONITOR_TRACKING_CLIENT_SECRET
+  });
+
+  assert.ok(idOnly.some((error) => error.includes("together")));
+  assert.ok(secretOnly.some((error) => error.includes("together")));
+  assert.ok(shortSecret.some((error) => error.includes("MAIL_SSO_CLIENT_SECRET must contain")));
+  assert.ok(reusedSecret.some((error) => error.includes("dedicated MAIL_SSO_CLIENT_SECRET")));
+});
