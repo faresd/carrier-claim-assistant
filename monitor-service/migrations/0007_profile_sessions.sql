@@ -17,3 +17,12 @@ CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_browser
 
 CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_expiry
   ON carrier_profile_sessions(expires_at);
+
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_carrier_profile_sessions_active_browser_subject ON carrier_profile_sessions(browser_digest, subject_digest) WHERE revoked_at IS NULL;
+CREATE TRIGGER IF NOT EXISTS trg_carrier_profile_sessions_active_cap BEFORE INSERT ON carrier_profile_sessions
+WHEN NOT EXISTS (SELECT 1 FROM carrier_profile_sessions existing WHERE existing.browser_digest = NEW.browser_digest AND existing.subject_digest = NEW.subject_digest AND existing.revoked_at IS NULL)
+AND (SELECT COUNT(*) FROM carrier_profile_sessions active WHERE active.browser_digest = NEW.browser_digest AND active.revoked_at IS NULL AND active.expires_at > NEW.created_at) >= 5
+BEGIN
+  SELECT RAISE(ABORT, 'profile_limit_reached');
+END;
