@@ -34,6 +34,11 @@ class MemoryD1 {
         return { results: [...this.rows.values()].filter(row => row.browser_digest === browser && row.revoked_at === null && row.expires_at > now).map(row => ({ id: row.id, metadata_ciphertext: row.metadata_ciphertext, expires_at: row.expires_at })) };
       },
       first: async () => {
+        if (sql.startsWith("SELECT id FROM carrier_profile_sessions WHERE browser_digest")) {
+          const [browser, subject] = args;
+          const row = [...this.rows.values()].find(value => value.browser_digest === browser && value.subject_digest === subject && value.revoked_at === null);
+          return row ? { id: row.id } : null;
+        }
         const [id, browser, now] = args;
         const row = this.rows.get(id);
         return row && row.browser_digest === browser && row.revoked_at === null && row.expires_at > now ? row : null;
@@ -49,6 +54,8 @@ test("schema provisioning is migration-only and additive", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS carrier_profile_sessions/);
   assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_browser/);
   assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_carrier_profile_sessions_expiry/);
+  assert.match(migration, /ux_carrier_profile_sessions_active_browser_subject/);
+  assert.match(migration, /trg_carrier_profile_sessions_active_cap/);
 });
 
 
