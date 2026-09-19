@@ -27,6 +27,8 @@ export function validateDeploymentEnvironment(environment = process.env) {
   const sessionSecret = configured(environment, "MONITOR_SESSION_SECRET");
   const trackingSecret = configured(environment, "MONITOR_TRACKING_CLIENT_SECRET");
   const cheaplyAuthClientId = configured(environment, "CHEAPLY_AUTH_CLIENT_ID");
+  const legacyMailClientId = configured(environment, "MAIL_SSO_CLIENT_ID");
+  const legacyMailSecret = configured(environment, "MAIL_SSO_CLIENT_SECRET");
 
   if (accountId && !/^[a-f0-9]{32}$/i.test(accountId)) errors.push("CF_ACCOUNT_ID must be a 32-character Cloudflare account ID.");
   if (databaseId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(databaseId)) {
@@ -39,8 +41,17 @@ export function validateDeploymentEnvironment(environment = process.env) {
   if (cheaplyAuthClientId && !/^(ca_|cm_sso_)[A-Za-z0-9_-]{24}$/.test(cheaplyAuthClientId)) {
     errors.push("CHEAPLY_AUTH_CLIENT_ID must be a central Cheaply Auth client id.");
   }
+  if (Boolean(legacyMailClientId) !== Boolean(legacyMailSecret)) {
+    errors.push("Configure MAIL_SSO_CLIENT_ID and MAIL_SSO_CLIENT_SECRET together, or leave both unset.");
+  }
+  if (legacyMailSecret && legacyMailSecret.length < 32) {
+    errors.push("MAIL_SSO_CLIENT_SECRET must contain at least 32 characters.");
+  }
   if (sessionSecret && trackingSecret && sessionSecret === trackingSecret) {
     errors.push("Use different values for MONITOR_SESSION_SECRET and MONITOR_TRACKING_CLIENT_SECRET.");
+  }
+  if (legacyMailSecret && (legacyMailSecret === sessionSecret || legacyMailSecret === trackingSecret)) {
+    errors.push("Use a dedicated MAIL_SSO_CLIENT_SECRET, distinct from existing monitor secrets.");
   }
   return errors;
 }
