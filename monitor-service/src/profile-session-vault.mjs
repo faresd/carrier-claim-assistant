@@ -77,21 +77,7 @@ export function createCarrierProfileSessionVault(db, options) {
     try { return metadata(await open(await encryptionKey, value, MAX_METADATA_BYTES)); } catch { return null; }
   };
   return {
-    async save(input) {
-      const browser = required(input?.browserId, "invalid_profile_browser");
-      const subject = required(input?.subjectId, "invalid_profile_subject");
-      const session = required(input?.session, "invalid_profile_session", MAX_SESSION_BYTES);
-      const now = timestamp(input?.now, "invalid_profile_time");
-      const expiresAt = timestamp(input?.expiresAt, "invalid_profile_expiry");
-      if (expiresAt <= now) throw new Error("expired_profile_session");
-      const profile = metadata(input?.metadata);
-      const [key, device, account] = await Promise.all([encryptionKey, browserDigest(browser), digest(await browserKey, "carrier-profile-subject:" + subject)]);
-      const [sessionCiphertext, metadataCiphertext] = await Promise.all([seal(key, session, MAX_SESSION_BYTES), seal(key, profile, MAX_METADATA_BYTES)]);
-      const id = identifier();
-      await db.prepare("INSERT INTO carrier_profile_sessions (id,browser_digest,subject_digest,session_ciphertext,metadata_ciphertext,expires_at,created_at) VALUES (?,?,?,?,?,?,?)").bind(id, device, account, sessionCiphertext, metadataCiphertext, expiresAt, now).run();
-      return { id, expiresAt, metadata: profile };
-    },
-    async list(input) {
+    async save(input) { const browser = required(input?.browserId, "invalid_profile_browser"); const subject = required(input?.subjectId, "invalid_profile_subject"); const session = required(input?.session, "invalid_profile_session", MAX_SESSION_BYTES); const now = timestamp(input?.now, "invalid_profile_time"); const expiresAt = timestamp(input?.expiresAt, "invalid_profile_expiry"); if (expiresAt <= now) throw new Error("expired_profile_session"); const profile = metadata(input?.metadata); const [key, device, account] = await Promise.all([encryptionKey, browserDigest(browser), digest(await browserKey, "carrier-profile-subject:" + subject)]); const [sessionCiphertext, metadataCiphertext] = await Promise.all([seal(key, session, MAX_SESSION_BYTES), seal(key, profile, MAX_METADATA_BYTES)]); try { await db.prepare("INSERT INTO carrier_profile_sessions (id,browser_digest,subject_digest,session_ciphertext,metadata_ciphertext,expires_at,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(browser_digest,subject_digest) WHERE revoked_at IS NULL DO UPDATE SET session_ciphertext=excluded.session_ciphertext,metadata_ciphertext=excluded.metadata_ciphertext,expires_at=excluded.expires_at,last_used_at=NULL").bind(identifier(), device, account, sessionCiphertext, metadataCiphertext, expiresAt, now).run(); } catch (error) { if (String(error).includes("profile_limit_reached")) throw new Error("profile_limit_reached"); throw error; } const stored = await db.prepare("SELECT id FROM carrier_profile_sessions WHERE browser_digest = ? AND subject_digest = ? AND revoked_at IS NULL LIMIT 1").bind(device, account).first(); if (!stored?.id) throw new Error("profile_session_write_failed"); return { id: String(stored.id), expiresAt, metadata: profile }; }, async list(input) {
       const now = timestamp(input?.now, "invalid_profile_time");
       const device = await browserDigest(input?.browserId);
       const result = await db.prepare("SELECT id,metadata_ciphertext,expires_at FROM carrier_profile_sessions WHERE browser_digest = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY last_used_at DESC, created_at DESC LIMIT 5").bind(device, now).all();
