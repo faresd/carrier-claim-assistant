@@ -4,6 +4,8 @@ compatibility_date = "2026-08-31"
 
 [vars]
 CHEAPLY_AUTH_CLIENT_ID = "REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID"
+# Empty until the dedicated Legacy Mail OAuth client is provisioned.
+MAIL_SSO_CLIENT_ID = "REPLACE_WITH_MAIL_SSO_CLIENT_ID"
 
 [assets]
 directory = "./admin"
