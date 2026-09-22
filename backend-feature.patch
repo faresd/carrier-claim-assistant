@@ -55,7 +55,7 @@ index fa780f3..acb631b 100644
  
  After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally. When the morning Worker run exhausts both Suivi v2 and the legacy v1 fallback, the server leases each failed non-terminal order to at most one paired browser. The extension checks the official carrier page in one reusable inactive tab, uploads the fresh result, and then advances to the next lease. Delivered and resolved records, placeholder tracking numbers, and checks already refreshed by another browser are excluded.
 diff --git a/monitor-service/admin/app.js b/monitor-service/admin/app.js
-index ccde67c..81eec1d 100644
+index bb57238..b0f7ac1 100644
 --- a/monitor-service/admin/app.js
 +++ b/monitor-service/admin/app.js
 @@ -144,8 +144,10 @@
@@ -72,31 +72,31 @@ index ccde67c..81eec1d 100644
        return `<tr>
          <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>
 diff --git a/monitor-service/scripts/validate-deployment-env.mjs b/monitor-service/scripts/validate-deployment-env.mjs
-index c158fea..9620f53 100644
+index 400b9ab..ddc67f9 100644
 --- a/monitor-service/scripts/validate-deployment-env.mjs
 +++ b/monitor-service/scripts/validate-deployment-env.mjs
-@@ -6,7 +6,8 @@ const REQUIRED = [
-   "CF_API_TOKEN",
+@@ -7,7 +7,8 @@ const REQUIRED = [
    "LAPOSTE_OKAPI_KEY",
    "MONITOR_SESSION_SECRET",
--  "MONITOR_TRACKING_CLIENT_SECRET"
-+  "MONITOR_TRACKING_CLIENT_SECRET",
+   "MONITOR_TRACKING_CLIENT_SECRET",
+-  "CHEAPLY_AUTH_CLIENT_ID"
++  "CHEAPLY_AUTH_CLIENT_ID",
 +  "CLAIM_INTEGRATION_SECRET"
  ];
  
  function configured(environment, name) {
-@@ -25,6 +26,7 @@ export function validateDeploymentEnvironment(environment = process.env) {
-   const okapiKey = configured(environment, "LAPOSTE_OKAPI_KEY");
+@@ -27,6 +28,7 @@ export function validateDeploymentEnvironment(environment = process.env) {
    const sessionSecret = configured(environment, "MONITOR_SESSION_SECRET");
    const trackingSecret = configured(environment, "MONITOR_TRACKING_CLIENT_SECRET");
+   const cheaplyAuthClientId = configured(environment, "CHEAPLY_AUTH_CLIENT_ID");
 +  const claimIntegrationSecret = configured(environment, "CLAIM_INTEGRATION_SECRET");
  
    if (accountId && !/^[a-f0-9]{32}$/i.test(accountId)) errors.push("CF_ACCOUNT_ID must be a 32-character Cloudflare account ID.");
    if (databaseId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(databaseId)) {
-@@ -34,9 +36,13 @@ export function validateDeploymentEnvironment(environment = process.env) {
-   if (okapiKey && okapiKey.length < 8) errors.push("LAPOSTE_OKAPI_KEY appears incomplete.");
-   if (sessionSecret && sessionSecret.length < 32) errors.push("MONITOR_SESSION_SECRET must contain at least 32 characters.");
-   if (trackingSecret && trackingSecret.length < 32) errors.push("MONITOR_TRACKING_CLIENT_SECRET must contain at least 32 characters.");
+@@ -39,9 +41,13 @@ export function validateDeploymentEnvironment(environment = process.env) {
+   if (cheaplyAuthClientId && !/^(ca_|cm_sso_)[A-Za-z0-9_-]{24}$/.test(cheaplyAuthClientId)) {
+     errors.push("CHEAPLY_AUTH_CLIENT_ID must be a central Cheaply Auth client id.");
+   }
 +  if (claimIntegrationSecret && claimIntegrationSecret.length < 32) errors.push("CLAIM_INTEGRATION_SECRET must contain at least 32 characters.");
    if (sessionSecret && trackingSecret && sessionSecret === trackingSecret) {
      errors.push("Use different values for MONITOR_SESSION_SECRET and MONITOR_TRACKING_CLIENT_SECRET.");
@@ -108,7 +108,7 @@ index c158fea..9620f53 100644
  }
  
 diff --git a/monitor-service/src/worker.mjs b/monitor-service/src/worker.mjs
-index 8894198..f512231 100644
+index 7ca73c5..c6ebb23 100644
 --- a/monitor-service/src/worker.mjs
 +++ b/monitor-service/src/worker.mjs
 @@ -96,6 +96,22 @@ function safeAmazonOrderUrl(value, orderId) {
@@ -134,7 +134,7 @@ index 8894198..f512231 100644
  function json(data, status = 200, extraHeaders = {}) {
    return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
  }
-@@ -205,7 +221,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
+@@ -218,7 +234,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
      trackingNumber: clean(input.trackingNumber, 40).toUpperCase(),
      carrierId: clean(input.carrierId, 30),
      carrierLabel: clean(input.carrierLabel || input.carrier, 80),
@@ -143,7 +143,7 @@ index 8894198..f512231 100644
      orderDate: clean(input.orderDate, 100),
      shipDate: clean(input.shipDate, 100),
      deliverBy: clean(input.deliverBy, 180),
-@@ -240,8 +256,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
+@@ -253,8 +269,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
  
  export async function upsertOrder(db, input) {
    const order = safeOrder(input);
@@ -155,7 +155,7 @@ index 8894198..f512231 100644
    }
    const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
    const tombstone = fallbackAccounts.has(order.accountId)
-@@ -398,6 +415,167 @@ function rowToOrder(row) {
+@@ -411,6 +428,167 @@ function rowToOrder(row) {
    return Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]));
  }
  
@@ -323,7 +323,7 @@ index 8894198..f512231 100644
  // Repair legacy misclassifications from their saved evidence, never invent a new
  // check time or physical receipt. Compare the evidence again in SQL so an
  // in-flight carrier check or manual resolution cannot be overwritten.
-@@ -423,7 +601,9 @@ async function repairAllStoredTrackingStates(db) {
+@@ -436,7 +614,9 @@ async function repairAllStoredTrackingStates(db) {
  }
  
  async function listOrders(db, url, deviceId = "master") {
@@ -333,7 +333,7 @@ index 8894198..f512231 100644
    const view = url.searchParams.get("view") || "all";
    const alerts = url.searchParams.get("alerts") === "1";
    const clauses = [];
-@@ -850,6 +1030,7 @@ export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
+@@ -863,6 +1043,7 @@ export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
  }
  
  export async function enqueueDailyMonitor(env, date = new Date()) {
@@ -341,7 +341,7 @@ index 8894198..f512231 100644
    await repairAllStoredTrackingStates(env.DB);
    const parts = parisDateParts(date);
    const runDate = `${parts.year}-${parts.month}-${parts.day}`;
-@@ -920,6 +1101,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
+@@ -933,6 +1114,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
        WHERE run_date = ?`).bind(result ? 1 : 0, failed ? 1 : 0, now, job.run_date)
    );
    await env.DB.batch(statements);
@@ -349,7 +349,7 @@ index 8894198..f512231 100644
  }
  
  export async function processTrackingMessage(message, env, { fetchImpl = fetch } = {}) {
-@@ -998,7 +1180,8 @@ async function createClaimLaunch(request, env, recordId) {
+@@ -1011,7 +1193,8 @@ async function createClaimLaunch(request, env, recordId) {
    const reason = CLAIM_REASONS.has(body.reason) ? body.reason : CLAIM_REASONS.has(row.claim_reason) ? row.claim_reason : "other";
    payload.carrier = carrier;
    payload.reason = reason;
@@ -359,7 +359,7 @@ index 8894198..f512231 100644
    payload.recipientTitle = clean(body.recipientTitle || payload.recipientTitle, 30);
    payload.executionMode = "automatic";
    payload.order = {
-@@ -1118,7 +1301,105 @@ async function claimPairingCode(request, env) {
+@@ -1131,7 +1314,105 @@ async function claimPairingCode(request, env) {
    return { token, deviceId, deviceName: device.name };
  }
  
@@ -466,31 +466,30 @@ index 8894198..f512231 100644
    const isAdmin = adminAuth.authorized;
    if (url.pathname === "/api/pairing/claim" && request.method === "POST") {
 diff --git a/monitor-service/test/deployment-env.test.mjs b/monitor-service/test/deployment-env.test.mjs
-index 6767801..aa42770 100644
+index 65f190e..be39396 100644
 --- a/monitor-service/test/deployment-env.test.mjs
 +++ b/monitor-service/test/deployment-env.test.mjs
-@@ -8,7 +8,8 @@ const valid = {
-   CF_API_TOKEN: "cloudflare-token-with-sufficient-length",
+@@ -9,7 +9,8 @@ const valid = {
    LAPOSTE_OKAPI_KEY: "okapi-key",
    MONITOR_SESSION_SECRET: "session-secret-that-is-longer-than-thirty-two-characters",
--  MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two"
-+  MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two",
+   MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two",
+-  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001"
++  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001",
 +  CLAIM_INTEGRATION_SECRET: "shopify-claim-integration-secret-that-is-long-enough"
  };
  
  test("accepts a complete production deployment configuration", () => {
-@@ -30,11 +31,13 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
-     CF_API_TOKEN: "short",
-     LAPOSTE_OKAPI_KEY: "short",
+@@ -33,6 +34,7 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
      MONITOR_SESSION_SECRET: shared,
--    MONITOR_TRACKING_CLIENT_SECRET: shared
-+    MONITOR_TRACKING_CLIENT_SECRET: shared,
+     MONITOR_TRACKING_CLIENT_SECRET: shared,
+     CHEAPLY_AUTH_CLIENT_ID: "tracking-web"
 +    CLAIM_INTEGRATION_SECRET: shared
    });
    assert.ok(errors.some((error) => error.includes("32-character Cloudflare")));
    assert.ok(errors.some((error) => error.includes("D1 database UUID")));
-   assert.ok(errors.some((error) => error.includes("CF_API_TOKEN appears incomplete")));
+@@ -40,4 +42,5 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
    assert.ok(errors.some((error) => error.includes("LAPOSTE_OKAPI_KEY appears incomplete")));
+   assert.ok(errors.some((error) => error.includes("CHEAPLY_AUTH_CLIENT_ID")));
    assert.ok(errors.some((error) => error.includes("Use different values")));
 +  assert.ok(errors.some((error) => error.includes("CLAIM_INTEGRATION_SECRET must be different")));
  });
@@ -705,19 +704,17 @@ index fd90c10..32a94dd 100644
    const { database, db } = await monitorDatabase();
    context.after(() => database.close());
 diff --git a/monitor-service/wrangler.toml b/monitor-service/wrangler.toml
-index e9b74a0..4e910bf 100644
+index a329469..51525e8 100644
 --- a/monitor-service/wrangler.toml
 +++ b/monitor-service/wrangler.toml
-@@ -2,6 +2,9 @@ name = "carrier-return-monitor"
- main = "src/worker.mjs"
- compatibility_date = "2026-08-31"
+@@ -4,6 +4,7 @@ compatibility_date = "2026-08-31"
  
-+[vars]
+ [vars]
+ CHEAPLY_AUTH_CLIENT_ID = "REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID"
 +SHOPIFY_ALLOWED_SHOPS = "cheaply-today.myshopify.com"
-+
+ 
  [assets]
  directory = "./admin"
- binding = "ASSETS"
 diff --git a/src/shared/carrier-rules.js b/src/shared/carrier-rules.js
 index ae4d161..4e412a0 100644
 --- a/src/shared/carrier-rules.js
@@ -750,7 +747,7 @@ index 91bd434..41dcb51 100644
  
  test("recommends a loss claim when the carrier cannot locate the parcel", () => {
 diff --git a/tests/monitor-service.test.js b/tests/monitor-service.test.js
-index def3d9b..6fbc9f0 100644
+index 011e744..5557209 100644
 --- a/tests/monitor-service.test.js
 +++ b/tests/monitor-service.test.js
 @@ -129,6 +129,7 @@ test("dashboard exposes the required order queues, account filter, claims, resol
