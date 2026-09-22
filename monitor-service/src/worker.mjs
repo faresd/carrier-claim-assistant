@@ -96,6 +96,22 @@ function safeAmazonOrderUrl(value, orderId) {
   }
 }
 
+function safeOrderUrl(value, orderId, accountId = "") {
+  if (!String(orderId).startsWith("shopify:")) return safeAmazonOrderUrl(value, orderId);
+  const numericId = String(orderId).slice("shopify:".length);
+  try {
+    const url = new URL(clean(value, 1000));
+    const shop = String(accountId).replace(/^shopify:/, "");
+    const adminShopify = url.origin === "https://admin.shopify.com" && new RegExp(`/orders/${numericId}$`).test(url.pathname);
+    const legacyAdmin = url.hostname === shop && url.pathname === `/admin/orders/${numericId}`;
+    if (!/^\d+$/.test(numericId) || (!adminShopify && !legacyAdmin)) return "";
+    url.hash = "";
+    return url.toString().slice(0, 1000);
+  } catch {
+    return "";
+  }
+}
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
 }
@@ -218,7 +234,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
     trackingNumber: clean(input.trackingNumber, 40).toUpperCase(),
     carrierId: clean(input.carrierId, 30),
     carrierLabel: clean(input.carrierLabel || input.carrier, 80),
-    amazonUrl: safeAmazonOrderUrl(input.sourceUrl || input.amazonUrl, orderId),
+    amazonUrl: safeOrderUrl(input.sourceUrl || input.amazonUrl, orderId, accountId),
     orderDate: clean(input.orderDate, 100),
     shipDate: clean(input.shipDate, 100),
     deliverBy: clean(input.deliverBy, 180),
@@ -253,8 +269,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
 
 export async function upsertOrder(db, input) {
   const order = safeOrder(input);
-  if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || !order.trackingNumber) {
-    throw new Error("A valid Amazon order ID and tracking number are required.");
+  const validOrderId = /^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || /^shopify:\d{1,20}$/.test(order.orderId);
+  if (!validOrderId || !order.trackingNumber) {
+    throw new Error("A valid Amazon or Shopify order ID and tracking number are required.");
   }
   const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
   const tombstone = fallbackAccounts.has(order.accountId)
@@ -411,6 +428,167 @@ function rowToOrder(row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]));
 }
 
+const GENERIC_ACCOUNT_IDS = new Set(["default", "sellercentral.amazon.fr"]);
+const ORDER_ALIAS_UPDATE_COLUMNS = [
+  "account_name", "carrier_id", "carrier_label", "amazon_url", "order_date", "ship_date", "deliver_by", "item_value",
+  "product_name", "recipient_name", "recipient_address1", "recipient_address2", "recipient_city", "recipient_postal_code",
+  "recipient_country", "tracking_state", "status_text", "status_summary", "checked_at", "next_check_at", "claim_recommended",
+  "claim_reason", "claim_title", "claim_status", "claim_reference", "claim_submitted_at", "claim_payload", "pickup_notified_at",
+  "pickup_ack_at", "resolved_at", "resolution_previous_state", "resolution_note", "first_seen_at", "updated_at",
+  "status_current_summary", "tracking_classifier_version", "tracking_source"
+];
+
+function latestIso(left, right) {
+  return [String(left || ""), String(right || "")].sort().at(-1) || "";
+}
+
+function earliestIso(left, right) {
+  return [String(left || ""), String(right || "")].filter(Boolean).sort()[0] || "";
+}
+
+function preferredEvidenceRow(target, source) {
+  if (target.tracking_state === "resolved") return target;
+  if (source.tracking_state === "resolved") return source;
+  let preferred = String(source.checked_at || "") > String(target.checked_at || "") ? source : target;
+  const other = preferred === target ? source : target;
+  if (preferred.tracking_state === "unknown" && other.tracking_state !== "unknown") preferred = other;
+  if (preferred.tracking_state === "delivered" && other.tracking_state === "returned_delivered") preferred = other;
+  return preferred;
+}
+
+function claimStatusRank(value) {
+  return { none: 0, requested: 1, sent: 2 }[value] || 0;
+}
+
+function usefulAccountName(row) {
+  const name = clean(row.account_name, 160);
+  return name && name !== row.account_id && !GENERIC_ACCOUNT_IDS.has(name) ? name : "";
+}
+
+function mergedAliasRow(target, source) {
+  const merged = { ...target };
+  const fillWhenBlank = [
+    "carrier_id", "carrier_label", "amazon_url", "order_date", "ship_date", "deliver_by", "item_value", "product_name",
+    "recipient_name", "recipient_address1", "recipient_address2", "recipient_city", "recipient_postal_code", "recipient_country",
+    "next_check_at", "claim_title", "claim_reference", "claim_submitted_at", "pickup_notified_at", "pickup_ack_at",
+    "resolved_at", "resolution_previous_state", "resolution_note"
+  ];
+  for (const column of fillWhenBlank) if (!merged[column] && source[column]) merged[column] = source[column];
+  if (!usefulAccountName(target) && usefulAccountName(source)) merged.account_name = source.account_name;
+
+  const evidence = preferredEvidenceRow(target, source);
+  for (const column of ["tracking_state", "status_text", "status_summary", "status_current_summary", "checked_at", "tracking_source"]) {
+    merged[column] = evidence[column] || merged[column] || source[column] || "";
+  }
+  merged.tracking_classifier_version = Math.max(Number(target.tracking_classifier_version || 0), Number(source.tracking_classifier_version || 0));
+
+  const sourceClaimIsPreferred = claimStatusRank(source.claim_status) > claimStatusRank(target.claim_status) ||
+    (claimStatusRank(source.claim_status) === claimStatusRank(target.claim_status) &&
+      String(source.claim_submitted_at || "") > String(target.claim_submitted_at || ""));
+  const claim = sourceClaimIsPreferred ? source : target;
+  merged.claim_status = claim.claim_status || "none";
+  for (const column of ["claim_reason", "claim_title", "claim_reference", "claim_submitted_at"]) {
+    const chosen = claim[column];
+    if (chosen && chosen !== "none") merged[column] = chosen;
+  }
+  merged.claim_recommended = Math.max(Number(target.claim_recommended || 0), Number(source.claim_recommended || 0));
+  // The canonical merchant row is authoritative on conflicts; the legacy row
+  // only fills information that the newer record has not captured.
+  merged.claim_payload = mergeClaimPayloadJson(source.claim_payload, target.claim_payload);
+  merged.pickup_notified_at = latestIso(target.pickup_notified_at, source.pickup_notified_at);
+  merged.pickup_ack_at = latestIso(target.pickup_ack_at, source.pickup_ack_at);
+  merged.resolved_at = latestIso(target.resolved_at, source.resolved_at);
+  merged.first_seen_at = earliestIso(target.first_seen_at, source.first_seen_at);
+  merged.updated_at = latestIso(target.updated_at, source.updated_at);
+  return merged;
+}
+
+async function aliasMergeIsBusy(db, targetId, sourceId) {
+  const job = await db.prepare(`SELECT record_id FROM monitor_jobs
+    WHERE record_id IN (?, ?) AND status NOT IN ('completed', 'failed') LIMIT 1`).bind(targetId, sourceId).first();
+  if (job) return true;
+  return Boolean(await db.prepare(`SELECT record_id FROM browser_fallback_leases
+    WHERE record_id IN (?, ?) AND leased_until > ? LIMIT 1`)
+    .bind(targetId, sourceId, new Date().toISOString()).first());
+}
+
+async function mergeOrderAlias(db, targetId, sourceId) {
+  if (!targetId || !sourceId || targetId === sourceId || await aliasMergeIsBusy(db, targetId, sourceId)) return false;
+  const target = await db.prepare("SELECT * FROM orders WHERE record_id = ?").bind(targetId).first();
+  const source = await db.prepare("SELECT * FROM orders WHERE record_id = ?").bind(sourceId).first();
+  if (!target || !source || target.order_id !== source.order_id || target.marketplace_id !== source.marketplace_id ||
+      target.tracking_number !== source.tracking_number) return false;
+  const merged = mergedAliasRow(target, source);
+  const receipts = (await db.prepare("SELECT device_id, last_notified_at FROM notification_receipts WHERE record_id = ?")
+    .bind(sourceId).all()).results || [];
+  const statements = [
+    db.prepare(`UPDATE orders SET ${ORDER_ALIAS_UPDATE_COLUMNS.map((column) => `${column} = ?`).join(", ")} WHERE record_id = ?`)
+      .bind(...ORDER_ALIAS_UPDATE_COLUMNS.map((column) => merged[column] ?? ""), targetId),
+    db.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code)
+      SELECT ?, tracking_state, status_text, event_at, observed_at, raw_code FROM tracking_events WHERE record_id = ?`)
+      .bind(targetId, sourceId),
+    db.prepare("UPDATE claim_launches SET record_id = ? WHERE record_id = ?").bind(targetId, sourceId),
+    ...receipts.map((receipt) => db.prepare(`INSERT INTO notification_receipts (record_id, device_id, last_notified_at)
+      VALUES (?, ?, ?) ON CONFLICT(record_id, device_id) DO UPDATE SET
+      last_notified_at = MAX(notification_receipts.last_notified_at, excluded.last_notified_at)`)
+      .bind(targetId, receipt.device_id, receipt.last_notified_at)),
+    db.prepare("DELETE FROM notification_receipts WHERE record_id = ?").bind(sourceId),
+    db.prepare("DELETE FROM tracking_events WHERE record_id = ?").bind(sourceId),
+    db.prepare("DELETE FROM monitor_jobs WHERE record_id = ?").bind(sourceId),
+    db.prepare("DELETE FROM browser_fallback_leases WHERE record_id = ?").bind(sourceId),
+    db.prepare("DELETE FROM orders WHERE record_id = ?").bind(sourceId)
+  ];
+  await db.batch(statements);
+  await db.prepare(`DELETE FROM seller_accounts WHERE account_id = ? AND marketplace_id = ?
+    AND NOT EXISTS (SELECT 1 FROM orders WHERE account_id = ? AND marketplace_id = ?)`)
+    .bind(source.account_id, source.marketplace_id, source.account_id, source.marketplace_id).run();
+  return true;
+}
+
+/**
+ * Collapse only identities that can be proven to be aliases. Generic legacy
+ * rows are merged when exactly one named/merchant account owns the same
+ * marketplace, order and tracking number. Distinct seller identities remain
+ * separate, and live queue/lease work is deferred to a later repair pass.
+ */
+export async function repairDuplicateOrderAliases(db) {
+  const groups = (await db.prepare(`SELECT order_id, marketplace_id, tracking_number FROM orders
+    GROUP BY order_id, marketplace_id, tracking_number HAVING COUNT(*) > 1
+    ORDER BY MAX(updated_at) DESC LIMIT 100`).all()).results || [];
+  let mergedCount = 0;
+  for (const group of groups) {
+    let rows = (await db.prepare(`SELECT * FROM orders WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
+      ORDER BY updated_at DESC`).bind(group.order_id, group.marketplace_id, group.tracking_number).all()).results || [];
+
+    // A name-derived identity may be upgraded to the one real merchant ID
+    // carrying the same visible Seller Central account name.
+    for (const source of rows.filter((row) => row.account_id.startsWith("seller-name:"))) {
+      const candidates = rows.filter((row) => !GENERIC_ACCOUNT_IDS.has(row.account_id) && !row.account_id.startsWith("seller-name:") &&
+        usefulAccountName(row) && normalize(row.account_name) === normalize(source.account_name));
+      if (candidates.length === 1 && await mergeOrderAlias(db, candidates[0].record_id, source.record_id)) mergedCount += 1;
+    }
+
+    rows = (await db.prepare(`SELECT * FROM orders WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
+      ORDER BY updated_at DESC`).bind(group.order_id, group.marketplace_id, group.tracking_number).all()).results || [];
+    const namedAccounts = [...new Set(rows.filter((row) => !GENERIC_ACCOUNT_IDS.has(row.account_id)).map((row) => row.account_id))];
+    if (namedAccounts.length !== 1) continue;
+    const target = rows.find((row) => row.account_id === namedAccounts[0]);
+    for (const source of rows.filter((row) => GENERIC_ACCOUNT_IDS.has(row.account_id))) {
+      if (await mergeOrderAlias(db, target.record_id, source.record_id)) mergedCount += 1;
+    }
+  }
+  return mergedCount;
+}
+
+export async function repairDeliveredClaimRecommendations(db, recordId = "") {
+  const result = await db.prepare(`UPDATE orders SET claim_recommended = 0, claim_reason = 'none', claim_title = ''
+    WHERE tracking_state = 'delivered' AND claim_status = 'none'
+      AND (claim_recommended != 0 OR claim_reason != 'none' OR claim_title != '')
+      ${recordId ? "AND record_id = ?" : ""}`)
+    .bind(...(recordId ? [recordId] : [])).run();
+  return Number(result?.meta?.changes || 0);
+}
+
 // Repair legacy misclassifications from their saved evidence, never invent a new
 // check time or physical receipt. Compare the evidence again in SQL so an
 // in-flight carrier check or manual resolution cannot be overwritten.
@@ -436,7 +614,9 @@ async function repairAllStoredTrackingStates(db) {
 }
 
 async function listOrders(db, url, deviceId = "master") {
+  await repairDuplicateOrderAliases(db);
   await repairAllStoredTrackingStates(db);
+  await repairDeliveredClaimRecommendations(db);
   const view = url.searchParams.get("view") || "all";
   const alerts = url.searchParams.get("alerts") === "1";
   const clauses = [];
@@ -863,6 +1043,7 @@ export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
 }
 
 export async function enqueueDailyMonitor(env, date = new Date()) {
+  await repairDuplicateOrderAliases(env.DB);
   await repairAllStoredTrackingStates(env.DB);
   const parts = parisDateParts(date);
   const runDate = `${parts.year}-${parts.month}-${parts.day}`;
@@ -933,6 +1114,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
       WHERE run_date = ?`).bind(result ? 1 : 0, failed ? 1 : 0, now, job.run_date)
   );
   await env.DB.batch(statements);
+  if (row && result) await repairDeliveredClaimRecommendations(env.DB, row.record_id);
 }
 
 export async function processTrackingMessage(message, env, { fetchImpl = fetch } = {}) {
@@ -1011,7 +1193,8 @@ async function createClaimLaunch(request, env, recordId) {
   const reason = CLAIM_REASONS.has(body.reason) ? body.reason : CLAIM_REASONS.has(row.claim_reason) ? row.claim_reason : "other";
   payload.carrier = carrier;
   payload.reason = reason;
-  payload.details = clean(body.details || payload.details || row.claim_title || `Commande Amazon ${row.order_id} · ${row.status_text}`, 500);
+  const sourceLabel = row.marketplace_id === "shopify" ? "Commande Shopify" : "Commande Amazon";
+  payload.details = clean(body.details || payload.details || row.claim_title || `${sourceLabel} ${row.order_id} · ${row.status_text}`, 500);
   payload.recipientTitle = clean(body.recipientTitle || payload.recipientTitle, 30);
   payload.executionMode = "automatic";
   payload.order = {
@@ -1131,7 +1314,105 @@ async function claimPairingCode(request, env) {
   return { token, deviceId, deviceName: device.name };
 }
 
+async function integrationAuthorized(request, env) {
+  const expected = clean(env.CLAIM_INTEGRATION_SECRET, 500);
+  const actual = bearer(request);
+  if (!expected || !actual) return false;
+  return (await sha256(expected)) === (await sha256(actual));
+}
+
+function shopifyClaimInput(body = {}) {
+  const shop = clean(body.shop, 180).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)) throw new Error("A valid Shopify shop is required.");
+  const source = body.order && typeof body.order === "object" ? body.order : {};
+  const shopifyOrderId = clean(source.shopifyOrderId, 20);
+  if (!/^\d{1,20}$/.test(shopifyOrderId)) throw new Error("A valid Shopify order ID is required.");
+  const trackingNumber = clean(source.trackingNumber, 40).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const carrierId = clean(source.carrier?.id || source.carrierId, 30).toLowerCase();
+  if (!trackingNumber) throw new Error("The Shopify order has no fulfillment tracking number.");
+  if (!["laposte", "chronopost"].includes(carrierId)) throw new Error("Only La Poste, Colissimo, and Chronopost claims are supported.");
+  const storeHandle = shop.replace(/\.myshopify\.com$/, "");
+  const displayOrder = clean(source.orderName, 80) || `#${shopifyOrderId}`;
+  const sender = body.sender && typeof body.sender === "object" ? body.sender : {};
+  const items = Array.isArray(source.items) ? source.items.slice(0, 30) : [];
+  return {
+    sellerAccountId: `shopify:${shop}`,
+    sellerAccountName: `Shopify · ${storeHandle}`,
+    marketplaceId: "shopify",
+    orderId: `shopify:${shopifyOrderId}`,
+    trackingNumber,
+    carrierId,
+    carrierLabel: clean(source.carrier?.label || source.carrierLabel || (carrierId === "chronopost" ? "Chronopost" : "La Poste"), 80),
+    sourceUrl: `https://admin.shopify.com/store/${storeHandle}/orders/${shopifyOrderId}`,
+    orderDate: clean(source.orderDate, 100),
+    shipDate: clean(source.shipDate, 100),
+    itemValue: clean(source.itemValue, 80),
+    productName: clean(source.productName, 500),
+    recipientName: clean(source.recipientName, 200),
+    recipientAddress1: clean(source.recipientAddress1, 250),
+    recipientAddress2: clean(source.recipientAddress2, 250),
+    recipientCity: clean(source.recipientCity, 120),
+    recipientPostalCode: clean(source.recipientPostalCode, 30),
+    recipientCountry: clean(source.recipientCountry, 100),
+    trackingState: "unknown",
+    claimPayload: {
+      carrier: carrierId,
+      recipientTitle: clean(body.recipientTitle || source.recipientTitle, 30),
+      details: clean(body.details, 500),
+      sender,
+      order: {
+        orderId: displayOrder,
+        shopifyOrderId,
+        source: "shopify",
+        sourceUrl: `https://admin.shopify.com/store/${storeHandle}/orders/${shopifyOrderId}`,
+        trackingNumber,
+        orderDate: clean(source.orderDate, 100),
+        shipDate: clean(source.shipDate, 100),
+        itemValue: clean(source.itemValue, 80),
+        productName: clean(source.productName, 500),
+        recipientName: clean(source.recipientName, 200),
+        recipientAddress1: clean(source.recipientAddress1, 250),
+        recipientAddress2: clean(source.recipientAddress2, 250),
+        recipientCity: clean(source.recipientCity, 120),
+        recipientPostalCode: clean(source.recipientPostalCode, 30),
+        recipientCountry: clean(source.recipientCountry, 100),
+        recipientPhone: clean(source.recipientPhone, 60),
+        recipientEmail: clean(source.recipientEmail, 200),
+        sellerAccountId: `shopify:${shop}`,
+        sellerAccountName: `Shopify · ${storeHandle}`,
+        marketplaceId: "shopify",
+        items
+      }
+    }
+  };
+}
+
+async function shopifyClaimIntegration(request, env, action) {
+  if (!(await integrationAuthorized(request, env))) return json({ error: "Unauthorized" }, 401, corsHeaders(request));
+  try {
+    const body = await request.json();
+    const allowed = String(env.SHOPIFY_ALLOWED_SHOPS || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+    if (allowed.length && !allowed.includes(clean(body.shop, 180).toLowerCase())) return json({ error: "Shopify shop is not allowed" }, 403, corsHeaders(request));
+    const input = shopifyClaimInput(body);
+    const order = await upsertOrder(env.DB, input);
+    if (action === "prepare") {
+      const stored = rowToOrder(await env.DB.prepare("SELECT * FROM orders WHERE record_id = ?").bind(order.recordId).first());
+      return json({ ok: true, order: stored }, 200, corsHeaders(request));
+    }
+    const launchRequest = new Request(request.url, {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({reason: body.reason, details: body.details, recipientTitle: body.recipientTitle})
+    });
+    return json({ ok: true, order, ...(await createClaimLaunch(launchRequest, env, order.recordId)) }, 200, corsHeaders(request));
+  } catch (error) {
+    return json({ error: error.message }, error.status || 400, corsHeaders(request));
+  }
+}
+
 async function api(request, env, url) {
+  const shopifyClaimMatch = url.pathname.match(/^\/api\/integrations\/shopify\/claims\/(prepare|launch)$/);
+  if (shopifyClaimMatch && request.method === "POST") return shopifyClaimIntegration(request, env, shopifyClaimMatch[1]);
   const adminAuth = await dashboardAdminAuth(request, env);
   const isAdmin = adminAuth.authorized;
   if (url.pathname === "/api/pairing/claim" && request.method === "POST") {

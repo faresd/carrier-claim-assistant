@@ -16,6 +16,8 @@ import monitorWorker, {
   monitorHealth,
   normalizeCarrierPayload,
   processTrackingMessage,
+  repairDeliveredClaimRecommendations,
+  repairDuplicateOrderAliases,
   repairStoredTrackingStates,
   shouldRunMorningMonitor,
   upsertOrder
@@ -63,6 +65,50 @@ test("classifies a returned parcel waiting for sender pickup as urgent", () => {
     "Votre envoi retourné est disponible au bureau de poste.",
     "Retour à l'expéditeur. Le colis est à retirer au point de retrait."
   ), "pickup_ready");
+});
+
+test("accepts authenticated Shopify claim packages and creates a single-use carrier launch", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const env = {
+    DB: db,
+    CLAIM_INTEGRATION_SECRET: "shopify-claim-secret-with-at-least-thirty-two-characters",
+    SHOPIFY_ALLOWED_SHOPS: "cheaply-today.myshopify.com"
+  };
+  const payload = {
+    shop: "cheaply-today.myshopify.com",
+    order: {
+      shopifyOrderId: "9876543210", orderName: "#1042", orderDate: "2026-09-20T10:00:00Z",
+      trackingNumber: "CC123456789FR", carrier: {id: "laposte", label: "Colissimo"},
+      recipientTitle: "Madame", recipientName: "Sophie Martin", recipientAddress1: "2 rue Client",
+      recipientPostalCode: "69001", recipientCity: "Lyon", recipientCountry: "France",
+      productName: "USB dock", itemValue: "39.90 EUR", items: [{productName: "USB dock", quantity: 1}]
+    },
+    sender: {
+      companyName: "Cheaply", contactFirstName: "Fares", contactLastName: "D", email: "ops@example.com",
+      phone: "+33100000000", address1: "1 rue Test", postalCode: "75001", city: "Paris", country: "FR"
+    },
+    recipientTitle: "Madame", reason: "lost", details: "Commande #1042 non livrée"
+  };
+  const request = (action, token = env.CLAIM_INTEGRATION_SECRET) => new Request(`https://tracking.cheaply.fr/api/integrations/shopify/claims/${action}`, {
+    method: "POST",
+    headers: {authorization: `Bearer ${token}`, "content-type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+  assert.equal((await monitorWorker.fetch(request("prepare", "wrong-secret"), env)).status, 401);
+  const preparedResponse = await monitorWorker.fetch(request("prepare"), env);
+  assert.equal(preparedResponse.status, 200);
+  const prepared = await preparedResponse.json();
+  assert.equal(prepared.order.orderId, "shopify:9876543210");
+  assert.equal(prepared.order.accountName, "Shopify · cheaply-today");
+  assert.equal(prepared.order.amazonUrl, "https://admin.shopify.com/store/cheaply-today/orders/9876543210");
+
+  const launchResponse = await monitorWorker.fetch(request("launch"), env);
+  assert.equal(launchResponse.status, 200);
+  const launch = await launchResponse.json();
+  assert.equal(launch.carrier, "laposte");
+  assert.match(launch.url, /^https:\/\/contact\.aide\.laposte\.fr\/.+#carrier-claim-launch=[A-Za-z0-9]+$/);
+  assert.equal(database.prepare("SELECT claim_status FROM orders WHERE order_id = 'shopify:9876543210'").get().claim_status, "requested");
 });
 
 test("does not treat a future return warning as sender pickup", () => {
@@ -1255,6 +1301,145 @@ test("does not merge two distinct name-derived Amazon accounts", async (context)
     database.prepare("SELECT account_id FROM orders ORDER BY account_id").all().map((row) => row.account_id),
     ["seller-name:cheaply-es", "seller-name:chrecycle"]
   );
+});
+
+test("repairs an existing generic/merchant duplicate without losing claim or tracking history", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const orderId = "408-8581724-4474734";
+  const marketplaceId = "A13V1IB3VIYZZH";
+  const generic = await upsertOrder(db, {
+    orderId,
+    trackingNumber: "880001931034732",
+    sellerAccountId: "sellercentral.amazon.fr",
+    marketplaceId,
+    trackingState: "returned_delivered",
+    statusText: "Votre colis a été livré à son expéditeur.",
+    statusCurrentSummary: "Votre colis a été livré à son expéditeur.",
+    checkedAt: "2026-09-01T07:00:00.000Z",
+    claimStatus: "sent",
+    claimReason: "returned",
+    claimReference: "COL-91943828",
+    claimPayload: { details: "Older generic claim message", sender: { email: "claims@example.com" } },
+    firstSeenAt: "2026-08-30T07:00:00.000Z"
+  });
+  const targetId = `amzn1.merchant.o.A19A98AEOKAGHS|${marketplaceId}|${orderId}`;
+  database.prepare(`INSERT INTO orders
+    (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, recipient_address1,
+      tracking_state, status_text, status_summary, status_current_summary, checked_at, tracking_source,
+      claim_status, claim_payload, first_seen_at, updated_at, tracking_classifier_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'delivered', 'Votre colis a été livré.', 'Votre colis a été livré.',
+      'Votre colis a été livré.', ?, 'carrier-page-laposte', 'none', ?, ?, ?, 1)`)
+    .run(targetId, "amzn1.merchant.o.A19A98AEOKAGHS", "Cheaply France", marketplaceId, orderId,
+      "880001931034732", "1 rue de Paris", "2026-09-02T07:00:00.000Z",
+      JSON.stringify({ details: "Current merchant claim message", order: { sku: "SKU-1" } }),
+      "2026-09-01T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
+  database.prepare("INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run("amzn1.merchant.o.A19A98AEOKAGHS", "Cheaply France", marketplaceId, "2026-09-01T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
+  database.prepare("INSERT INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at) VALUES (?, ?, ?, ?, ?)")
+    .run(generic.recordId, "returned_delivered", "Retour livré à l'expéditeur", "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
+  database.prepare("INSERT INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at) VALUES (?, ?, ?, ?, ?)")
+    .run(targetId, "delivered", "Votre colis a été livré", "2026-09-02T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
+  database.prepare("INSERT INTO claim_launches (token_hash, record_id, created_at, expires_at) VALUES ('launch-token', ?, ?, ?)")
+    .run(generic.recordId, "2026-09-02T08:00:00.000Z", "2026-09-02T08:10:00.000Z");
+  database.prepare("INSERT INTO notification_receipts (record_id, device_id, last_notified_at) VALUES (?, 'browser-a', ?)")
+    .run(generic.recordId, "2026-09-02T08:00:00.000Z");
+
+  assert.equal(await repairDuplicateOrderAliases(db), 1);
+  const rows = database.prepare("SELECT * FROM orders").all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].record_id, targetId);
+  assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
+  assert.equal(rows[0].tracking_state, "returned_delivered");
+  assert.match(rows[0].status_text, /expéditeur/);
+  assert.equal(rows[0].recipient_address1, "1 rue de Paris");
+  assert.equal(rows[0].claim_status, "sent");
+  assert.equal(rows[0].claim_reference, "COL-91943828");
+  assert.deepEqual(JSON.parse(rows[0].claim_payload), {
+    details: "Current merchant claim message", sender: { email: "claims@example.com" }, order: { sku: "SKU-1" }
+  });
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tracking_events WHERE record_id = ?").get(targetId).count, 2);
+  assert.equal(database.prepare("SELECT record_id FROM claim_launches WHERE token_hash = 'launch-token'").get().record_id, targetId);
+  assert.equal(database.prepare("SELECT record_id FROM notification_receipts WHERE device_id = 'browser-a'").get().record_id, targetId);
+  assert.deepEqual(database.prepare("SELECT account_id FROM seller_accounts").all().map((row) => row.account_id),
+    ["amzn1.merchant.o.A19A98AEOKAGHS"]);
+});
+
+test("defers alias repair while a monitor job is active", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const orderId = "408-8581724-4474735";
+  const marketplaceId = "A13V1IB3VIYZZH";
+  const generic = await upsertOrder(db, {
+    orderId, trackingNumber: "CC123456780FR", sellerAccountId: "sellercentral.amazon.fr", marketplaceId
+  });
+  database.prepare(`INSERT INTO orders (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, first_seen_at, updated_at)
+    VALUES (?, 'merchant-one', 'Cheaply France', ?, ?, 'CC123456780FR', ?, ?)`)
+    .run(`merchant-one|${marketplaceId}|${orderId}`, marketplaceId, orderId, "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
+  database.prepare("INSERT INTO monitor_runs (run_date, started_at) VALUES ('2026-09-06', '2026-09-06T05:00:00.000Z')").run();
+  database.prepare(`INSERT INTO monitor_jobs (run_date, record_id, status, created_at, updated_at)
+    VALUES ('2026-09-06', ?, 'dispatched', '2026-09-06T05:00:00.000Z', '2026-09-06T05:00:00.000Z')`).run(generic.recordId);
+
+  assert.equal(await repairDuplicateOrderAliases(db), 0);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 2);
+  database.prepare("UPDATE monitor_jobs SET status = 'failed' WHERE record_id = ?").run(generic.recordId);
+  database.prepare(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
+    VALUES ('browser-a', 'Test browser', 'test-token-hash', ?, ?)`)
+    .run("2026-09-05T05:00:00.000Z", "2026-09-05T05:00:00.000Z");
+  database.prepare(`INSERT INTO browser_fallback_leases
+    (record_id, lease_id, device_id, leased_at, leased_until) VALUES (?, 'expired-lease', 'browser-a', ?, ?)`)
+    .run(generic.recordId, "2026-09-05T05:00:00.000Z", "2026-09-05T05:05:00.000Z");
+  assert.equal(await repairDuplicateOrderAliases(db), 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM browser_fallback_leases").get().count, 0);
+});
+
+test("keeps a generic record separate when two seller accounts are plausible", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  const orderId = "408-8581724-4474736";
+  const marketplaceId = "A13V1IB3VIYZZH";
+  await upsertOrder(db, {
+    orderId, trackingNumber: "CC123456781FR", sellerAccountId: "sellercentral.amazon.fr", marketplaceId
+  });
+  for (const accountId of ["merchant-one", "merchant-two"]) {
+    database.prepare(`INSERT INTO orders (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, first_seen_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'CC123456781FR', ?, ?)`)
+      .run(`${accountId}|${marketplaceId}|${orderId}`, accountId, accountId, marketplaceId, orderId,
+        "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
+  }
+
+  assert.equal(await repairDuplicateOrderAliases(db), 0);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 3);
+});
+
+test("clears stale delivered recommendations while preserving real claim history", async (context) => {
+  const { database, db } = await monitorDatabase();
+  context.after(() => database.close());
+  for (const [index, claimStatus] of ["none", "requested", "sent"].entries()) {
+    const order = await upsertOrder(db, {
+      orderId: `408-8581724-447474${index}`,
+      trackingNumber: `CC12345679${index}FR`,
+      sellerAccountId: "merchant-one",
+      trackingState: "delivered",
+      statusText: "Votre colis a été livré.",
+      claimRecommended: true,
+      claimReason: "delayed",
+      claimTitle: "Delivery overdue",
+      claimStatus
+    });
+    database.prepare("UPDATE orders SET claim_recommended = 1, claim_reason = 'delayed', claim_title = 'Delivery overdue' WHERE record_id = ?")
+      .run(order.recordId);
+  }
+
+  assert.equal(await repairDeliveredClaimRecommendations(db), 1);
+  const rows = database.prepare("SELECT claim_status, claim_recommended, claim_reason, claim_title FROM orders ORDER BY claim_status").all()
+    .map((row) => ({ ...row }));
+  assert.deepEqual(rows, [
+    { claim_status: "none", claim_recommended: 0, claim_reason: "none", claim_title: "" },
+    { claim_status: "requested", claim_recommended: 1, claim_reason: "delayed", claim_title: "Delivery overdue" },
+    { claim_status: "sent", claim_recommended: 1, claim_reason: "delayed", claim_title: "Delivery overdue" }
+  ]);
 });
 
 test("keeps a complete claim package when another browser uploads blank sender fields", async (context) => {

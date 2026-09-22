@@ -4,6 +4,7 @@ compatibility_date = "2026-08-31"
 
 [vars]
 CHEAPLY_AUTH_CLIENT_ID = "REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID"
+SHOPIFY_ALLOWED_SHOPS = "cheaply-today.myshopify.com"
 
 [assets]
 directory = "./admin"

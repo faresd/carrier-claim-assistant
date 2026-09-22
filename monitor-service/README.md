@@ -15,6 +15,8 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
 
 Each record includes a sanitized claim-ready package: seller account, shipment and item identifiers, value/quantity, sender contact/address, recipient/title/address, detected reason, editable message, tracking context, and claim outcome. From the dashboard, **Start claim** creates a single-use ten-minute token and opens the official La Poste or Chronopost workflow. Only a paired extension can redeem that token, and the existing final confirmation remains mandatory.
 
+Legacy rows created before Seller Central exposed an account identity are reconciled automatically when exactly one named or merchant account has the same marketplace, Amazon order, and tracking number. The repair retains the most authoritative tracking state, claim package/reference, saved events, per-device notification receipt, and unexpired claim launch. It defers records with an active queue job or browser fallback lease and never merges an ambiguous match spanning multiple seller accounts.
+
 The scheduled trigger runs every fifteen minutes, but the monitor creates one daily run only during the 07:00 Europe/Paris hour. Extra triggers in that hour safely resume any jobs not yet completed, which protects the morning check from a temporary deployment or queue interruption. This preserves the intended local time across daylight-saving changes. The queue consumes checks sequentially below the official API rate limit and retries temporary failures. Delivered and manually resolved parcels are terminal and are excluded from later carrier calls.
 
 ## Return state machine
@@ -43,6 +45,7 @@ The extension and server share one deterministic classifier. Current shipment su
 4. Add the non-sensitive GitHub Actions repository variables:
    - `CF_ACCOUNT_ID`
    - `CF_D1_DATABASE_ID`
+   - `LAPOSTE_ALLOW_PENDING=true` only while La Poste has not yet approved Suivi v2; delete this variable immediately after approval so every deployment requires a successful v2 preflight
 5. Add the following encrypted GitHub Actions secrets:
    - `CF_API_TOKEN` — scoped to this Worker's deployment resources
    - `LAPOSTE_OKAPI_KEY`
@@ -53,7 +56,7 @@ The extension and server share one deterministic classifier. Current shipment su
 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
 
-The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2 (an explicitly approved pending mode keeps infrastructure deployable while the fallback is used). The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
+The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2. While approval is pending, the explicit `LAPOSTE_ALLOW_PENDING=true` repository variable keeps automatic `main` deployments available and the existing carrier fallbacks active; removing the variable restores the strict v2 gate without a code change. A manual workflow run can also authorize a single pending-mode deployment. The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
 
 The health response is ready only after the Worker can see every required secret and binding and all twelve D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
 
@@ -77,6 +80,12 @@ The model receives only the latest carrier message and a short carrier-history s
 The code expires after ten minutes and can be used once. Pairing accepts at most ten attempts per network address in a fifteen-minute window. The browser receives its own device token; open **Add browser** on the dashboard to review paired installations and revoke any token. No La Poste or Cloudflare credentials are copied to the computer.
 
 The claim endpoint also requires Chrome/Brave's immutable `chrome-extension://` request origin. A website, command-line request, or originless script cannot redeem a pairing code even if it knows the six digits.
+
+## Shopify Admin claims
+
+The existing **Chlabs CN La Poste** Shopify app includes a separate **Carrier claim** order action. It reads the selected order and fulfillment through Shopify's authenticated Admin GraphQL API, detects La Poste/Colissimo/Chronopost from the tracking number before trusting the carrier label, and reuses the app's sender profile. The authenticated Shopify bridge forwards the claim package to this Worker through `/api/integrations/shopify/claims/prepare` and `/launch`.
+
+Both deployments must hold the same high-entropy `CLAIM_INTEGRATION_SECRET`; it is never shipped to Shopify UI code. Set `SHOPIFY_ALLOWED_SHOPS` on the Worker to a comma-separated allowlist such as `cheaply-today.myshopify.com`. Launch creates the same single-use ten-minute carrier URL used by the dashboard, so a paired Carrier Claim Assistant browser completes the official form and still pauses for the carrier's final confirmation.
 
 Active six-digit codes are never stored as readable values in D1. The Worker stores a domain-separated HMAC keyed by the dashboard session secret, so a database-only disclosure does not reveal a currently active code or permit an offline six-digit lookup.
 
