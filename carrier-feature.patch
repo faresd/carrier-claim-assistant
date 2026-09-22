@@ -1,0 +1,769 @@
+diff --git a/README.md b/README.md
+index f3cdcaf..3ba4367 100644
+--- a/README.md
++++ b/README.md
+@@ -29,7 +29,7 @@ On **Orders → Manage Orders**, every seller-fulfilled order row receives a car
+ 
+ Version 2.9 adds an optional private return-monitor service. Amazon order/tracking context is registered per Seller Central merchant and marketplace, so multiple Amazon accounts remain separated while the admin dashboard can show an All accounts view. The cloud monitor uses the official La Poste Suivi v2 API for Colissimo, La Poste, and Chronopost every morning at 07:00 Europe/Paris. Manage Orders badges prioritize **Returning to sender**, **Pickup required**, **Lost · investigate**, and **Returned · received** over generic claim labels. The extension polls the server for new pickup alerts and displays a persistent Chrome/Brave notification.
+ 
+-The browser cache, delivery audits, and claim outcomes use the same seller-account/marketplace/order identity as the cloud database. When Amazon omits the merchant ID from a page URL, the extension derives a stable provisional identity from the visible Seller Central account-switcher name. The server upgrades that provisional identity when Amazon later exposes the real merchant ID, without duplicating the order or losing its tracking and claim history. Version 2.9 also automatically migrates earlier order-number-only cache entries, preventing identical order numbers from different Amazon accounts from overwriting one another.
++The browser cache, delivery audits, and claim outcomes use the same seller-account/marketplace/order identity as the cloud database. When Amazon omits the merchant ID from a page URL, the extension derives a stable provisional identity from the visible Seller Central account-switcher name. The server upgrades that provisional identity when Amazon later exposes the real merchant ID, without duplicating the order or losing its tracking and claim history. It also repairs pre-existing generic/merchant duplicates when the ownership is unambiguous, while preserving claim references, carrier events, notification receipts, and active launch links; ambiguous cross-account matches remain separate. Version 2.9 also automatically migrates earlier order-number-only cache entries, preventing identical order numbers from different Amazon accounts from overwriting one another.
+ 
+ The production dashboard and API use `https://tracking.cheaply.fr`. New installations prefill this address and connect through a temporary six-digit pairing code; the cloud service remains disabled until a browser is paired. Pairing immediately uploads up to 50 cached orders, and the existing 15-minute background alarm safely continues any remaining or previously failed uploads.
+ 
+diff --git a/monitor-service/README.md b/monitor-service/README.md
+index fa780f3..acb631b 100644
+--- a/monitor-service/README.md
++++ b/monitor-service/README.md
+@@ -15,6 +15,8 @@ Production hostname: `https://tracking.cheaply.fr`. Cloudflare manages its DNS r
+ 
+ Each record includes a sanitized claim-ready package: seller account, shipment and item identifiers, value/quantity, sender contact/address, recipient/title/address, detected reason, editable message, tracking context, and claim outcome. From the dashboard, **Start claim** creates a single-use ten-minute token and opens the official La Poste or Chronopost workflow. Only a paired extension can redeem that token, and the existing final confirmation remains mandatory.
+ 
++Legacy rows created before Seller Central exposed an account identity are reconciled automatically when exactly one named or merchant account has the same marketplace, Amazon order, and tracking number. The repair retains the most authoritative tracking state, claim package/reference, saved events, per-device notification receipt, and unexpired claim launch. It defers records with an active queue job or browser fallback lease and never merges an ambiguous match spanning multiple seller accounts.
++
+ The scheduled trigger runs every fifteen minutes, but the monitor creates one daily run only during the 07:00 Europe/Paris hour. Extra triggers in that hour safely resume any jobs not yet completed, which protects the morning check from a temporary deployment or queue interruption. This preserves the intended local time across daylight-saving changes. The queue consumes checks sequentially below the official API rate limit and retries temporary failures. Delivered and manually resolved parcels are terminal and are excluded from later carrier calls.
+ 
+ ## Return state machine
+@@ -43,6 +45,7 @@ The extension and server share one deterministic classifier. Current shipment su
+ 4. Add the non-sensitive GitHub Actions repository variables:
+    - `CF_ACCOUNT_ID`
+    - `CF_D1_DATABASE_ID`
++   - `LAPOSTE_ALLOW_PENDING=true` only while La Poste has not yet approved Suivi v2; delete this variable immediately after approval so every deployment requires a successful v2 preflight
+ 5. Add the following encrypted GitHub Actions secrets:
+    - `CF_API_TOKEN` — scoped to this Worker's deployment resources
+    - `LAPOSTE_OKAPI_KEY`
+@@ -53,7 +56,7 @@ The extension and server share one deterministic classifier. Current shipment su
+ 7. Run the **Deploy return monitor** workflow. It applies D1 migrations, deploys the Worker/dashboard, connects the queue consumer, and activates the scheduled trigger.
+ 8. Open `https://tracking.cheaply.fr`; it redirects through the existing Cheaply sign-in and returns to the dashboard without exposing a token in browser storage.
+ 
+-The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2 (an explicitly approved pending mode keeps infrastructure deployable while the fallback is used). The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
++The workflow validates every required variable and secret before it applies a migration or deploys anything. It also rejects malformed Cloudflare identifiers, short secrets, and accidental reuse of the SSO client secret as the dashboard session secret; validation errors name the setting but never print its value. Before any production mutation, public preflights confirm that central Cheaply SSO accepts the exact `tracking-web` callback with PKCE and returns its secure request cookie, and that the configured Okapi application key is authorized to call La Poste Suivi v2. While approval is pending, the explicit `LAPOSTE_ALLOW_PENDING=true` repository variable keeps automatic `main` deployments available and the existing carrier fallbacks active; removing the variable restores the strict v2 gate without a code change. A manual workflow run can also authorize a single pending-mode deployment. The carrier probe uses a synthetic nonexistent identifier and never prints the key. After deployment, the workflow automatically retries the live custom domain and verifies the health response, dashboard security policy, unauthenticated API boundary, and Cheaply SSO PKCE redirect.
+ 
+ The health response is ready only after the Worker can see every required secret and binding and all twelve D1 schema tables. Production deploys are serialized, so overlapping pushes cannot race migrations or replace one another while a smoke test is still running.
+ 
+@@ -78,6 +81,12 @@ The code expires after ten minutes and can be used once. Pairing accepts at most
+ 
+ The claim endpoint also requires Chrome/Brave's immutable `chrome-extension://` request origin. A website, command-line request, or originless script cannot redeem a pairing code even if it knows the six digits.
+ 
++## Shopify Admin claims
++
++The existing **Chlabs CN La Poste** Shopify app includes a separate **Carrier claim** order action. It reads the selected order and fulfillment through Shopify's authenticated Admin GraphQL API, detects La Poste/Colissimo/Chronopost from the tracking number before trusting the carrier label, and reuses the app's sender profile. The authenticated Shopify bridge forwards the claim package to this Worker through `/api/integrations/shopify/claims/prepare` and `/launch`.
++
++Both deployments must hold the same high-entropy `CLAIM_INTEGRATION_SECRET`; it is never shipped to Shopify UI code. Set `SHOPIFY_ALLOWED_SHOPS` on the Worker to a comma-separated allowlist such as `cheaply-today.myshopify.com`. Launch creates the same single-use ten-minute carrier URL used by the dashboard, so a paired Carrier Claim Assistant browser completes the official form and still pauses for the carrier's final confirmation.
++
+ Active six-digit codes are never stored as readable values in D1. The Worker stores a domain-separated HMAC keyed by the dashboard session secret, so a database-only disclosure does not reveal a currently active code or permit an offline six-digit lookup.
+ 
+ After pairing, the extension immediately backfills up to 50 cached orders and continues pending or failed uploads during its fifteen-minute background cycle. New order checks are synchronized as soon as they are saved locally. When the morning Worker run exhausts both Suivi v2 and the legacy v1 fallback, the server leases each failed non-terminal order to at most one paired browser. The extension checks the official carrier page in one reusable inactive tab, uploads the fresh result, and then advances to the next lease. Delivered and resolved records, placeholder tracking numbers, and checks already refreshed by another browser are excluded.
+diff --git a/monitor-service/admin/app.js b/monitor-service/admin/app.js
+index bb57238..b0f7ac1 100644
+--- a/monitor-service/admin/app.js
++++ b/monitor-service/admin/app.js
+@@ -144,8 +144,10 @@
+       const address = [order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(" · ");
+       const claim = order.claimStatus === "sent"
+         ? `<strong>Sent${order.claimReference ? ` · ${escapeHtml(order.claimReference)}` : ""}</strong>${escapeHtml(order.claimReason || "")}`
+-        : order.claimRecommended || order.claimStatus === "requested"
+-          ? `<strong>${order.claimStatus === "requested" ? "Requested" : "Recommended"}</strong>${escapeHtml(order.claimReason || "Review")}`
++        : order.claimStatus === "requested"
++          ? `<strong>Requested</strong>${escapeHtml(order.claimReason || "Review")}`
++          : order.trackingState !== "delivered" && order.claimRecommended
++            ? `<strong>Recommended</strong>${escapeHtml(order.claimReason || "Review")}`
+           : "No claim queued";
+       return `<tr>
+         <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>
+diff --git a/monitor-service/scripts/validate-deployment-env.mjs b/monitor-service/scripts/validate-deployment-env.mjs
+index 400b9ab..ddc67f9 100644
+--- a/monitor-service/scripts/validate-deployment-env.mjs
++++ b/monitor-service/scripts/validate-deployment-env.mjs
+@@ -7,7 +7,8 @@ const REQUIRED = [
+   "LAPOSTE_OKAPI_KEY",
+   "MONITOR_SESSION_SECRET",
+   "MONITOR_TRACKING_CLIENT_SECRET",
+-  "CHEAPLY_AUTH_CLIENT_ID"
++  "CHEAPLY_AUTH_CLIENT_ID",
++  "CLAIM_INTEGRATION_SECRET"
+ ];
+ 
+ function configured(environment, name) {
+@@ -27,6 +28,7 @@ export function validateDeploymentEnvironment(environment = process.env) {
+   const sessionSecret = configured(environment, "MONITOR_SESSION_SECRET");
+   const trackingSecret = configured(environment, "MONITOR_TRACKING_CLIENT_SECRET");
+   const cheaplyAuthClientId = configured(environment, "CHEAPLY_AUTH_CLIENT_ID");
++  const claimIntegrationSecret = configured(environment, "CLAIM_INTEGRATION_SECRET");
+ 
+   if (accountId && !/^[a-f0-9]{32}$/i.test(accountId)) errors.push("CF_ACCOUNT_ID must be a 32-character Cloudflare account ID.");
+   if (databaseId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(databaseId)) {
+@@ -39,9 +41,13 @@ export function validateDeploymentEnvironment(environment = process.env) {
+   if (cheaplyAuthClientId && !/^(ca_|cm_sso_)[A-Za-z0-9_-]{24}$/.test(cheaplyAuthClientId)) {
+     errors.push("CHEAPLY_AUTH_CLIENT_ID must be a central Cheaply Auth client id.");
+   }
++  if (claimIntegrationSecret && claimIntegrationSecret.length < 32) errors.push("CLAIM_INTEGRATION_SECRET must contain at least 32 characters.");
+   if (sessionSecret && trackingSecret && sessionSecret === trackingSecret) {
+     errors.push("Use different values for MONITOR_SESSION_SECRET and MONITOR_TRACKING_CLIENT_SECRET.");
+   }
++  if (claimIntegrationSecret && [sessionSecret, trackingSecret].includes(claimIntegrationSecret)) {
++    errors.push("CLAIM_INTEGRATION_SECRET must be different from the monitor session and tracking client secrets.");
++  }
+   return errors;
+ }
+ 
+diff --git a/monitor-service/src/worker.mjs b/monitor-service/src/worker.mjs
+index 7ca73c5..c6ebb23 100644
+--- a/monitor-service/src/worker.mjs
++++ b/monitor-service/src/worker.mjs
+@@ -96,6 +96,22 @@ function safeAmazonOrderUrl(value, orderId) {
+   }
+ }
+ 
++function safeOrderUrl(value, orderId, accountId = "") {
++  if (!String(orderId).startsWith("shopify:")) return safeAmazonOrderUrl(value, orderId);
++  const numericId = String(orderId).slice("shopify:".length);
++  try {
++    const url = new URL(clean(value, 1000));
++    const shop = String(accountId).replace(/^shopify:/, "");
++    const adminShopify = url.origin === "https://admin.shopify.com" && new RegExp(`/orders/${numericId}$`).test(url.pathname);
++    const legacyAdmin = url.hostname === shop && url.pathname === `/admin/orders/${numericId}`;
++    if (!/^\d+$/.test(numericId) || (!adminShopify && !legacyAdmin)) return "";
++    url.hash = "";
++    return url.toString().slice(0, 1000);
++  } catch {
++    return "";
++  }
++}
++
+ function json(data, status = 200, extraHeaders = {}) {
+   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extraHeaders } });
+ }
+@@ -218,7 +234,7 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
+     trackingNumber: clean(input.trackingNumber, 40).toUpperCase(),
+     carrierId: clean(input.carrierId, 30),
+     carrierLabel: clean(input.carrierLabel || input.carrier, 80),
+-    amazonUrl: safeAmazonOrderUrl(input.sourceUrl || input.amazonUrl, orderId),
++    amazonUrl: safeOrderUrl(input.sourceUrl || input.amazonUrl, orderId, accountId),
+     orderDate: clean(input.orderDate, 100),
+     shipDate: clean(input.shipDate, 100),
+     deliverBy: clean(input.deliverBy, 180),
+@@ -253,8 +269,9 @@ function safeOrder(input = {}, now = new Date().toISOString()) {
+ 
+ export async function upsertOrder(db, input) {
+   const order = safeOrder(input);
+-  if (!/^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || !order.trackingNumber) {
+-    throw new Error("A valid Amazon order ID and tracking number are required.");
++  const validOrderId = /^[0-9]{3}-[0-9]{7}-[0-9]{7}$/.test(order.orderId) || /^shopify:\d{1,20}$/.test(order.orderId);
++  if (!validOrderId || !order.trackingNumber) {
++    throw new Error("A valid Amazon or Shopify order ID and tracking number are required.");
+   }
+   const fallbackAccounts = new Set(["default", "sellercentral.amazon.fr"]);
+   const tombstone = fallbackAccounts.has(order.accountId)
+@@ -411,6 +428,167 @@ function rowToOrder(row) {
+   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]));
+ }
+ 
++const GENERIC_ACCOUNT_IDS = new Set(["default", "sellercentral.amazon.fr"]);
++const ORDER_ALIAS_UPDATE_COLUMNS = [
++  "account_name", "carrier_id", "carrier_label", "amazon_url", "order_date", "ship_date", "deliver_by", "item_value",
++  "product_name", "recipient_name", "recipient_address1", "recipient_address2", "recipient_city", "recipient_postal_code",
++  "recipient_country", "tracking_state", "status_text", "status_summary", "checked_at", "next_check_at", "claim_recommended",
++  "claim_reason", "claim_title", "claim_status", "claim_reference", "claim_submitted_at", "claim_payload", "pickup_notified_at",
++  "pickup_ack_at", "resolved_at", "resolution_previous_state", "resolution_note", "first_seen_at", "updated_at",
++  "status_current_summary", "tracking_classifier_version", "tracking_source"
++];
++
++function latestIso(left, right) {
++  return [String(left || ""), String(right || "")].sort().at(-1) || "";
++}
++
++function earliestIso(left, right) {
++  return [String(left || ""), String(right || "")].filter(Boolean).sort()[0] || "";
++}
++
++function preferredEvidenceRow(target, source) {
++  if (target.tracking_state === "resolved") return target;
++  if (source.tracking_state === "resolved") return source;
++  let preferred = String(source.checked_at || "") > String(target.checked_at || "") ? source : target;
++  const other = preferred === target ? source : target;
++  if (preferred.tracking_state === "unknown" && other.tracking_state !== "unknown") preferred = other;
++  if (preferred.tracking_state === "delivered" && other.tracking_state === "returned_delivered") preferred = other;
++  return preferred;
++}
++
++function claimStatusRank(value) {
++  return { none: 0, requested: 1, sent: 2 }[value] || 0;
++}
++
++function usefulAccountName(row) {
++  const name = clean(row.account_name, 160);
++  return name && name !== row.account_id && !GENERIC_ACCOUNT_IDS.has(name) ? name : "";
++}
++
++function mergedAliasRow(target, source) {
++  const merged = { ...target };
++  const fillWhenBlank = [
++    "carrier_id", "carrier_label", "amazon_url", "order_date", "ship_date", "deliver_by", "item_value", "product_name",
++    "recipient_name", "recipient_address1", "recipient_address2", "recipient_city", "recipient_postal_code", "recipient_country",
++    "next_check_at", "claim_title", "claim_reference", "claim_submitted_at", "pickup_notified_at", "pickup_ack_at",
++    "resolved_at", "resolution_previous_state", "resolution_note"
++  ];
++  for (const column of fillWhenBlank) if (!merged[column] && source[column]) merged[column] = source[column];
++  if (!usefulAccountName(target) && usefulAccountName(source)) merged.account_name = source.account_name;
++
++  const evidence = preferredEvidenceRow(target, source);
++  for (const column of ["tracking_state", "status_text", "status_summary", "status_current_summary", "checked_at", "tracking_source"]) {
++    merged[column] = evidence[column] || merged[column] || source[column] || "";
++  }
++  merged.tracking_classifier_version = Math.max(Number(target.tracking_classifier_version || 0), Number(source.tracking_classifier_version || 0));
++
++  const sourceClaimIsPreferred = claimStatusRank(source.claim_status) > claimStatusRank(target.claim_status) ||
++    (claimStatusRank(source.claim_status) === claimStatusRank(target.claim_status) &&
++      String(source.claim_submitted_at || "") > String(target.claim_submitted_at || ""));
++  const claim = sourceClaimIsPreferred ? source : target;
++  merged.claim_status = claim.claim_status || "none";
++  for (const column of ["claim_reason", "claim_title", "claim_reference", "claim_submitted_at"]) {
++    const chosen = claim[column];
++    if (chosen && chosen !== "none") merged[column] = chosen;
++  }
++  merged.claim_recommended = Math.max(Number(target.claim_recommended || 0), Number(source.claim_recommended || 0));
++  // The canonical merchant row is authoritative on conflicts; the legacy row
++  // only fills information that the newer record has not captured.
++  merged.claim_payload = mergeClaimPayloadJson(source.claim_payload, target.claim_payload);
++  merged.pickup_notified_at = latestIso(target.pickup_notified_at, source.pickup_notified_at);
++  merged.pickup_ack_at = latestIso(target.pickup_ack_at, source.pickup_ack_at);
++  merged.resolved_at = latestIso(target.resolved_at, source.resolved_at);
++  merged.first_seen_at = earliestIso(target.first_seen_at, source.first_seen_at);
++  merged.updated_at = latestIso(target.updated_at, source.updated_at);
++  return merged;
++}
++
++async function aliasMergeIsBusy(db, targetId, sourceId) {
++  const job = await db.prepare(`SELECT record_id FROM monitor_jobs
++    WHERE record_id IN (?, ?) AND status NOT IN ('completed', 'failed') LIMIT 1`).bind(targetId, sourceId).first();
++  if (job) return true;
++  return Boolean(await db.prepare(`SELECT record_id FROM browser_fallback_leases
++    WHERE record_id IN (?, ?) AND leased_until > ? LIMIT 1`)
++    .bind(targetId, sourceId, new Date().toISOString()).first());
++}
++
++async function mergeOrderAlias(db, targetId, sourceId) {
++  if (!targetId || !sourceId || targetId === sourceId || await aliasMergeIsBusy(db, targetId, sourceId)) return false;
++  const target = await db.prepare("SELECT * FROM orders WHERE record_id = ?").bind(targetId).first();
++  const source = await db.prepare("SELECT * FROM orders WHERE record_id = ?").bind(sourceId).first();
++  if (!target || !source || target.order_id !== source.order_id || target.marketplace_id !== source.marketplace_id ||
++      target.tracking_number !== source.tracking_number) return false;
++  const merged = mergedAliasRow(target, source);
++  const receipts = (await db.prepare("SELECT device_id, last_notified_at FROM notification_receipts WHERE record_id = ?")
++    .bind(sourceId).all()).results || [];
++  const statements = [
++    db.prepare(`UPDATE orders SET ${ORDER_ALIAS_UPDATE_COLUMNS.map((column) => `${column} = ?`).join(", ")} WHERE record_id = ?`)
++      .bind(...ORDER_ALIAS_UPDATE_COLUMNS.map((column) => merged[column] ?? ""), targetId),
++    db.prepare(`INSERT OR IGNORE INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at, raw_code)
++      SELECT ?, tracking_state, status_text, event_at, observed_at, raw_code FROM tracking_events WHERE record_id = ?`)
++      .bind(targetId, sourceId),
++    db.prepare("UPDATE claim_launches SET record_id = ? WHERE record_id = ?").bind(targetId, sourceId),
++    ...receipts.map((receipt) => db.prepare(`INSERT INTO notification_receipts (record_id, device_id, last_notified_at)
++      VALUES (?, ?, ?) ON CONFLICT(record_id, device_id) DO UPDATE SET
++      last_notified_at = MAX(notification_receipts.last_notified_at, excluded.last_notified_at)`)
++      .bind(targetId, receipt.device_id, receipt.last_notified_at)),
++    db.prepare("DELETE FROM notification_receipts WHERE record_id = ?").bind(sourceId),
++    db.prepare("DELETE FROM tracking_events WHERE record_id = ?").bind(sourceId),
++    db.prepare("DELETE FROM monitor_jobs WHERE record_id = ?").bind(sourceId),
++    db.prepare("DELETE FROM browser_fallback_leases WHERE record_id = ?").bind(sourceId),
++    db.prepare("DELETE FROM orders WHERE record_id = ?").bind(sourceId)
++  ];
++  await db.batch(statements);
++  await db.prepare(`DELETE FROM seller_accounts WHERE account_id = ? AND marketplace_id = ?
++    AND NOT EXISTS (SELECT 1 FROM orders WHERE account_id = ? AND marketplace_id = ?)`)
++    .bind(source.account_id, source.marketplace_id, source.account_id, source.marketplace_id).run();
++  return true;
++}
++
++/**
++ * Collapse only identities that can be proven to be aliases. Generic legacy
++ * rows are merged when exactly one named/merchant account owns the same
++ * marketplace, order and tracking number. Distinct seller identities remain
++ * separate, and live queue/lease work is deferred to a later repair pass.
++ */
++export async function repairDuplicateOrderAliases(db) {
++  const groups = (await db.prepare(`SELECT order_id, marketplace_id, tracking_number FROM orders
++    GROUP BY order_id, marketplace_id, tracking_number HAVING COUNT(*) > 1
++    ORDER BY MAX(updated_at) DESC LIMIT 100`).all()).results || [];
++  let mergedCount = 0;
++  for (const group of groups) {
++    let rows = (await db.prepare(`SELECT * FROM orders WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
++      ORDER BY updated_at DESC`).bind(group.order_id, group.marketplace_id, group.tracking_number).all()).results || [];
++
++    // A name-derived identity may be upgraded to the one real merchant ID
++    // carrying the same visible Seller Central account name.
++    for (const source of rows.filter((row) => row.account_id.startsWith("seller-name:"))) {
++      const candidates = rows.filter((row) => !GENERIC_ACCOUNT_IDS.has(row.account_id) && !row.account_id.startsWith("seller-name:") &&
++        usefulAccountName(row) && normalize(row.account_name) === normalize(source.account_name));
++      if (candidates.length === 1 && await mergeOrderAlias(db, candidates[0].record_id, source.record_id)) mergedCount += 1;
++    }
++
++    rows = (await db.prepare(`SELECT * FROM orders WHERE order_id = ? AND marketplace_id = ? AND tracking_number = ?
++      ORDER BY updated_at DESC`).bind(group.order_id, group.marketplace_id, group.tracking_number).all()).results || [];
++    const namedAccounts = [...new Set(rows.filter((row) => !GENERIC_ACCOUNT_IDS.has(row.account_id)).map((row) => row.account_id))];
++    if (namedAccounts.length !== 1) continue;
++    const target = rows.find((row) => row.account_id === namedAccounts[0]);
++    for (const source of rows.filter((row) => GENERIC_ACCOUNT_IDS.has(row.account_id))) {
++      if (await mergeOrderAlias(db, target.record_id, source.record_id)) mergedCount += 1;
++    }
++  }
++  return mergedCount;
++}
++
++export async function repairDeliveredClaimRecommendations(db, recordId = "") {
++  const result = await db.prepare(`UPDATE orders SET claim_recommended = 0, claim_reason = 'none', claim_title = ''
++    WHERE tracking_state = 'delivered' AND claim_status = 'none'
++      AND (claim_recommended != 0 OR claim_reason != 'none' OR claim_title != '')
++      ${recordId ? "AND record_id = ?" : ""}`)
++    .bind(...(recordId ? [recordId] : [])).run();
++  return Number(result?.meta?.changes || 0);
++}
++
+ // Repair legacy misclassifications from their saved evidence, never invent a new
+ // check time or physical receipt. Compare the evidence again in SQL so an
+ // in-flight carrier check or manual resolution cannot be overwritten.
+@@ -436,7 +614,9 @@ async function repairAllStoredTrackingStates(db) {
+ }
+ 
+ async function listOrders(db, url, deviceId = "master") {
++  await repairDuplicateOrderAliases(db);
+   await repairAllStoredTrackingStates(db);
++  await repairDeliveredClaimRecommendations(db);
+   const view = url.searchParams.get("view") || "all";
+   const alerts = url.searchParams.get("alerts") === "1";
+   const clauses = [];
+@@ -863,6 +1043,7 @@ export async function enqueueOrderRecheck(env, recordId, date = new Date()) {
+ }
+ 
+ export async function enqueueDailyMonitor(env, date = new Date()) {
++  await repairDuplicateOrderAliases(env.DB);
+   await repairAllStoredTrackingStates(env.DB);
+   const parts = parisDateParts(date);
+   const runDate = `${parts.year}-${parts.month}-${parts.day}`;
+@@ -933,6 +1114,7 @@ async function finishMonitorJob(env, job, { row = null, result = null, error = "
+       WHERE run_date = ?`).bind(result ? 1 : 0, failed ? 1 : 0, now, job.run_date)
+   );
+   await env.DB.batch(statements);
++  if (row && result) await repairDeliveredClaimRecommendations(env.DB, row.record_id);
+ }
+ 
+ export async function processTrackingMessage(message, env, { fetchImpl = fetch } = {}) {
+@@ -1011,7 +1193,8 @@ async function createClaimLaunch(request, env, recordId) {
+   const reason = CLAIM_REASONS.has(body.reason) ? body.reason : CLAIM_REASONS.has(row.claim_reason) ? row.claim_reason : "other";
+   payload.carrier = carrier;
+   payload.reason = reason;
+-  payload.details = clean(body.details || payload.details || row.claim_title || `Commande Amazon ${row.order_id} · ${row.status_text}`, 500);
++  const sourceLabel = row.marketplace_id === "shopify" ? "Commande Shopify" : "Commande Amazon";
++  payload.details = clean(body.details || payload.details || row.claim_title || `${sourceLabel} ${row.order_id} · ${row.status_text}`, 500);
+   payload.recipientTitle = clean(body.recipientTitle || payload.recipientTitle, 30);
+   payload.executionMode = "automatic";
+   payload.order = {
+@@ -1131,7 +1314,105 @@ async function claimPairingCode(request, env) {
+   return { token, deviceId, deviceName: device.name };
+ }
+ 
++async function integrationAuthorized(request, env) {
++  const expected = clean(env.CLAIM_INTEGRATION_SECRET, 500);
++  const actual = bearer(request);
++  if (!expected || !actual) return false;
++  return (await sha256(expected)) === (await sha256(actual));
++}
++
++function shopifyClaimInput(body = {}) {
++  const shop = clean(body.shop, 180).toLowerCase();
++  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)) throw new Error("A valid Shopify shop is required.");
++  const source = body.order && typeof body.order === "object" ? body.order : {};
++  const shopifyOrderId = clean(source.shopifyOrderId, 20);
++  if (!/^\d{1,20}$/.test(shopifyOrderId)) throw new Error("A valid Shopify order ID is required.");
++  const trackingNumber = clean(source.trackingNumber, 40).toUpperCase().replace(/[^A-Z0-9]/g, "");
++  const carrierId = clean(source.carrier?.id || source.carrierId, 30).toLowerCase();
++  if (!trackingNumber) throw new Error("The Shopify order has no fulfillment tracking number.");
++  if (!["laposte", "chronopost"].includes(carrierId)) throw new Error("Only La Poste, Colissimo, and Chronopost claims are supported.");
++  const storeHandle = shop.replace(/\.myshopify\.com$/, "");
++  const displayOrder = clean(source.orderName, 80) || `#${shopifyOrderId}`;
++  const sender = body.sender && typeof body.sender === "object" ? body.sender : {};
++  const items = Array.isArray(source.items) ? source.items.slice(0, 30) : [];
++  return {
++    sellerAccountId: `shopify:${shop}`,
++    sellerAccountName: `Shopify · ${storeHandle}`,
++    marketplaceId: "shopify",
++    orderId: `shopify:${shopifyOrderId}`,
++    trackingNumber,
++    carrierId,
++    carrierLabel: clean(source.carrier?.label || source.carrierLabel || (carrierId === "chronopost" ? "Chronopost" : "La Poste"), 80),
++    sourceUrl: `https://admin.shopify.com/store/${storeHandle}/orders/${shopifyOrderId}`,
++    orderDate: clean(source.orderDate, 100),
++    shipDate: clean(source.shipDate, 100),
++    itemValue: clean(source.itemValue, 80),
++    productName: clean(source.productName, 500),
++    recipientName: clean(source.recipientName, 200),
++    recipientAddress1: clean(source.recipientAddress1, 250),
++    recipientAddress2: clean(source.recipientAddress2, 250),
++    recipientCity: clean(source.recipientCity, 120),
++    recipientPostalCode: clean(source.recipientPostalCode, 30),
++    recipientCountry: clean(source.recipientCountry, 100),
++    trackingState: "unknown",
++    claimPayload: {
++      carrier: carrierId,
++      recipientTitle: clean(body.recipientTitle || source.recipientTitle, 30),
++      details: clean(body.details, 500),
++      sender,
++      order: {
++        orderId: displayOrder,
++        shopifyOrderId,
++        source: "shopify",
++        sourceUrl: `https://admin.shopify.com/store/${storeHandle}/orders/${shopifyOrderId}`,
++        trackingNumber,
++        orderDate: clean(source.orderDate, 100),
++        shipDate: clean(source.shipDate, 100),
++        itemValue: clean(source.itemValue, 80),
++        productName: clean(source.productName, 500),
++        recipientName: clean(source.recipientName, 200),
++        recipientAddress1: clean(source.recipientAddress1, 250),
++        recipientAddress2: clean(source.recipientAddress2, 250),
++        recipientCity: clean(source.recipientCity, 120),
++        recipientPostalCode: clean(source.recipientPostalCode, 30),
++        recipientCountry: clean(source.recipientCountry, 100),
++        recipientPhone: clean(source.recipientPhone, 60),
++        recipientEmail: clean(source.recipientEmail, 200),
++        sellerAccountId: `shopify:${shop}`,
++        sellerAccountName: `Shopify · ${storeHandle}`,
++        marketplaceId: "shopify",
++        items
++      }
++    }
++  };
++}
++
++async function shopifyClaimIntegration(request, env, action) {
++  if (!(await integrationAuthorized(request, env))) return json({ error: "Unauthorized" }, 401, corsHeaders(request));
++  try {
++    const body = await request.json();
++    const allowed = String(env.SHOPIFY_ALLOWED_SHOPS || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
++    if (allowed.length && !allowed.includes(clean(body.shop, 180).toLowerCase())) return json({ error: "Shopify shop is not allowed" }, 403, corsHeaders(request));
++    const input = shopifyClaimInput(body);
++    const order = await upsertOrder(env.DB, input);
++    if (action === "prepare") {
++      const stored = rowToOrder(await env.DB.prepare("SELECT * FROM orders WHERE record_id = ?").bind(order.recordId).first());
++      return json({ ok: true, order: stored }, 200, corsHeaders(request));
++    }
++    const launchRequest = new Request(request.url, {
++      method: "POST",
++      headers: {"content-type": "application/json"},
++      body: JSON.stringify({reason: body.reason, details: body.details, recipientTitle: body.recipientTitle})
++    });
++    return json({ ok: true, order, ...(await createClaimLaunch(launchRequest, env, order.recordId)) }, 200, corsHeaders(request));
++  } catch (error) {
++    return json({ error: error.message }, error.status || 400, corsHeaders(request));
++  }
++}
++
+ async function api(request, env, url) {
++  const shopifyClaimMatch = url.pathname.match(/^\/api\/integrations\/shopify\/claims\/(prepare|launch)$/);
++  if (shopifyClaimMatch && request.method === "POST") return shopifyClaimIntegration(request, env, shopifyClaimMatch[1]);
+   const adminAuth = await dashboardAdminAuth(request, env);
+   const isAdmin = adminAuth.authorized;
+   if (url.pathname === "/api/pairing/claim" && request.method === "POST") {
+diff --git a/monitor-service/test/deployment-env.test.mjs b/monitor-service/test/deployment-env.test.mjs
+index 65f190e..be39396 100644
+--- a/monitor-service/test/deployment-env.test.mjs
++++ b/monitor-service/test/deployment-env.test.mjs
+@@ -9,7 +9,8 @@ const valid = {
+   LAPOSTE_OKAPI_KEY: "okapi-key",
+   MONITOR_SESSION_SECRET: "session-secret-that-is-longer-than-thirty-two-characters",
+   MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two",
+-  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001"
++  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001",
++  CLAIM_INTEGRATION_SECRET: "shopify-claim-integration-secret-that-is-long-enough"
+ };
+ 
+ test("accepts a complete production deployment configuration", () => {
+@@ -33,6 +34,7 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
+     MONITOR_SESSION_SECRET: shared,
+     MONITOR_TRACKING_CLIENT_SECRET: shared,
+     CHEAPLY_AUTH_CLIENT_ID: "tracking-web"
++    CLAIM_INTEGRATION_SECRET: shared
+   });
+   assert.ok(errors.some((error) => error.includes("32-character Cloudflare")));
+   assert.ok(errors.some((error) => error.includes("D1 database UUID")));
+@@ -40,4 +42,5 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
+   assert.ok(errors.some((error) => error.includes("LAPOSTE_OKAPI_KEY appears incomplete")));
+   assert.ok(errors.some((error) => error.includes("CHEAPLY_AUTH_CLIENT_ID")));
+   assert.ok(errors.some((error) => error.includes("Use different values")));
++  assert.ok(errors.some((error) => error.includes("CLAIM_INTEGRATION_SECRET must be different")));
+ });
+diff --git a/monitor-service/test/worker.test.mjs b/monitor-service/test/worker.test.mjs
+index fd90c10..32a94dd 100644
+--- a/monitor-service/test/worker.test.mjs
++++ b/monitor-service/test/worker.test.mjs
+@@ -16,6 +16,8 @@ import monitorWorker, {
+   monitorHealth,
+   normalizeCarrierPayload,
+   processTrackingMessage,
++  repairDeliveredClaimRecommendations,
++  repairDuplicateOrderAliases,
+   repairStoredTrackingStates,
+   shouldRunMorningMonitor,
+   upsertOrder
+@@ -65,6 +67,50 @@ test("classifies a returned parcel waiting for sender pickup as urgent", () => {
+   ), "pickup_ready");
+ });
+ 
++test("accepts authenticated Shopify claim packages and creates a single-use carrier launch", async (context) => {
++  const { database, db } = await monitorDatabase();
++  context.after(() => database.close());
++  const env = {
++    DB: db,
++    CLAIM_INTEGRATION_SECRET: "shopify-claim-secret-with-at-least-thirty-two-characters",
++    SHOPIFY_ALLOWED_SHOPS: "cheaply-today.myshopify.com"
++  };
++  const payload = {
++    shop: "cheaply-today.myshopify.com",
++    order: {
++      shopifyOrderId: "9876543210", orderName: "#1042", orderDate: "2026-09-20T10:00:00Z",
++      trackingNumber: "CC123456789FR", carrier: {id: "laposte", label: "Colissimo"},
++      recipientTitle: "Madame", recipientName: "Sophie Martin", recipientAddress1: "2 rue Client",
++      recipientPostalCode: "69001", recipientCity: "Lyon", recipientCountry: "France",
++      productName: "USB dock", itemValue: "39.90 EUR", items: [{productName: "USB dock", quantity: 1}]
++    },
++    sender: {
++      companyName: "Cheaply", contactFirstName: "Fares", contactLastName: "D", email: "ops@example.com",
++      phone: "+33100000000", address1: "1 rue Test", postalCode: "75001", city: "Paris", country: "FR"
++    },
++    recipientTitle: "Madame", reason: "lost", details: "Commande #1042 non livrée"
++  };
++  const request = (action, token = env.CLAIM_INTEGRATION_SECRET) => new Request(`https://tracking.cheaply.fr/api/integrations/shopify/claims/${action}`, {
++    method: "POST",
++    headers: {authorization: `Bearer ${token}`, "content-type": "application/json"},
++    body: JSON.stringify(payload)
++  });
++  assert.equal((await monitorWorker.fetch(request("prepare", "wrong-secret"), env)).status, 401);
++  const preparedResponse = await monitorWorker.fetch(request("prepare"), env);
++  assert.equal(preparedResponse.status, 200);
++  const prepared = await preparedResponse.json();
++  assert.equal(prepared.order.orderId, "shopify:9876543210");
++  assert.equal(prepared.order.accountName, "Shopify · cheaply-today");
++  assert.equal(prepared.order.amazonUrl, "https://admin.shopify.com/store/cheaply-today/orders/9876543210");
++
++  const launchResponse = await monitorWorker.fetch(request("launch"), env);
++  assert.equal(launchResponse.status, 200);
++  const launch = await launchResponse.json();
++  assert.equal(launch.carrier, "laposte");
++  assert.match(launch.url, /^https:\/\/contact\.aide\.laposte\.fr\/.+#carrier-claim-launch=[A-Za-z0-9]+$/);
++  assert.equal(database.prepare("SELECT claim_status FROM orders WHERE order_id = 'shopify:9876543210'").get().claim_status, "requested");
++});
++
+ test("does not treat a future return warning as sender pickup", () => {
+   assert.equal(classifyTrackingState(
+     "Votre colis est disponible au bureau de poste pour le destinataire.",
+@@ -1257,6 +1303,145 @@ test("does not merge two distinct name-derived Amazon accounts", async (context)
+   );
+ });
+ 
++test("repairs an existing generic/merchant duplicate without losing claim or tracking history", async (context) => {
++  const { database, db } = await monitorDatabase();
++  context.after(() => database.close());
++  const orderId = "408-8581724-4474734";
++  const marketplaceId = "A13V1IB3VIYZZH";
++  const generic = await upsertOrder(db, {
++    orderId,
++    trackingNumber: "880001931034732",
++    sellerAccountId: "sellercentral.amazon.fr",
++    marketplaceId,
++    trackingState: "returned_delivered",
++    statusText: "Votre colis a été livré à son expéditeur.",
++    statusCurrentSummary: "Votre colis a été livré à son expéditeur.",
++    checkedAt: "2026-09-01T07:00:00.000Z",
++    claimStatus: "sent",
++    claimReason: "returned",
++    claimReference: "COL-91943828",
++    claimPayload: { details: "Older generic claim message", sender: { email: "claims@example.com" } },
++    firstSeenAt: "2026-08-30T07:00:00.000Z"
++  });
++  const targetId = `amzn1.merchant.o.A19A98AEOKAGHS|${marketplaceId}|${orderId}`;
++  database.prepare(`INSERT INTO orders
++    (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, recipient_address1,
++      tracking_state, status_text, status_summary, status_current_summary, checked_at, tracking_source,
++      claim_status, claim_payload, first_seen_at, updated_at, tracking_classifier_version)
++    VALUES (?, ?, ?, ?, ?, ?, ?, 'delivered', 'Votre colis a été livré.', 'Votre colis a été livré.',
++      'Votre colis a été livré.', ?, 'carrier-page-laposte', 'none', ?, ?, ?, 1)`)
++    .run(targetId, "amzn1.merchant.o.A19A98AEOKAGHS", "Cheaply France", marketplaceId, orderId,
++      "880001931034732", "1 rue de Paris", "2026-09-02T07:00:00.000Z",
++      JSON.stringify({ details: "Current merchant claim message", order: { sku: "SKU-1" } }),
++      "2026-09-01T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
++  database.prepare("INSERT INTO seller_accounts (account_id, account_name, marketplace_id, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?)")
++    .run("amzn1.merchant.o.A19A98AEOKAGHS", "Cheaply France", marketplaceId, "2026-09-01T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
++  database.prepare("INSERT INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at) VALUES (?, ?, ?, ?, ?)")
++    .run(generic.recordId, "returned_delivered", "Retour livré à l'expéditeur", "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
++  database.prepare("INSERT INTO tracking_events (record_id, tracking_state, status_text, event_at, observed_at) VALUES (?, ?, ?, ?, ?)")
++    .run(targetId, "delivered", "Votre colis a été livré", "2026-09-02T07:00:00.000Z", "2026-09-02T07:00:00.000Z");
++  database.prepare("INSERT INTO claim_launches (token_hash, record_id, created_at, expires_at) VALUES ('launch-token', ?, ?, ?)")
++    .run(generic.recordId, "2026-09-02T08:00:00.000Z", "2026-09-02T08:10:00.000Z");
++  database.prepare("INSERT INTO notification_receipts (record_id, device_id, last_notified_at) VALUES (?, 'browser-a', ?)")
++    .run(generic.recordId, "2026-09-02T08:00:00.000Z");
++
++  assert.equal(await repairDuplicateOrderAliases(db), 1);
++  const rows = database.prepare("SELECT * FROM orders").all();
++  assert.equal(rows.length, 1);
++  assert.equal(rows[0].record_id, targetId);
++  assert.equal(rows[0].account_id, "amzn1.merchant.o.A19A98AEOKAGHS");
++  assert.equal(rows[0].tracking_state, "returned_delivered");
++  assert.match(rows[0].status_text, /expéditeur/);
++  assert.equal(rows[0].recipient_address1, "1 rue de Paris");
++  assert.equal(rows[0].claim_status, "sent");
++  assert.equal(rows[0].claim_reference, "COL-91943828");
++  assert.deepEqual(JSON.parse(rows[0].claim_payload), {
++    details: "Current merchant claim message", sender: { email: "claims@example.com" }, order: { sku: "SKU-1" }
++  });
++  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tracking_events WHERE record_id = ?").get(targetId).count, 2);
++  assert.equal(database.prepare("SELECT record_id FROM claim_launches WHERE token_hash = 'launch-token'").get().record_id, targetId);
++  assert.equal(database.prepare("SELECT record_id FROM notification_receipts WHERE device_id = 'browser-a'").get().record_id, targetId);
++  assert.deepEqual(database.prepare("SELECT account_id FROM seller_accounts").all().map((row) => row.account_id),
++    ["amzn1.merchant.o.A19A98AEOKAGHS"]);
++});
++
++test("defers alias repair while a monitor job is active", async (context) => {
++  const { database, db } = await monitorDatabase();
++  context.after(() => database.close());
++  const orderId = "408-8581724-4474735";
++  const marketplaceId = "A13V1IB3VIYZZH";
++  const generic = await upsertOrder(db, {
++    orderId, trackingNumber: "CC123456780FR", sellerAccountId: "sellercentral.amazon.fr", marketplaceId
++  });
++  database.prepare(`INSERT INTO orders (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, first_seen_at, updated_at)
++    VALUES (?, 'merchant-one', 'Cheaply France', ?, ?, 'CC123456780FR', ?, ?)`)
++    .run(`merchant-one|${marketplaceId}|${orderId}`, marketplaceId, orderId, "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
++  database.prepare("INSERT INTO monitor_runs (run_date, started_at) VALUES ('2026-09-06', '2026-09-06T05:00:00.000Z')").run();
++  database.prepare(`INSERT INTO monitor_jobs (run_date, record_id, status, created_at, updated_at)
++    VALUES ('2026-09-06', ?, 'dispatched', '2026-09-06T05:00:00.000Z', '2026-09-06T05:00:00.000Z')`).run(generic.recordId);
++
++  assert.equal(await repairDuplicateOrderAliases(db), 0);
++  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 2);
++  database.prepare("UPDATE monitor_jobs SET status = 'failed' WHERE record_id = ?").run(generic.recordId);
++  database.prepare(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
++    VALUES ('browser-a', 'Test browser', 'test-token-hash', ?, ?)`)
++    .run("2026-09-05T05:00:00.000Z", "2026-09-05T05:00:00.000Z");
++  database.prepare(`INSERT INTO browser_fallback_leases
++    (record_id, lease_id, device_id, leased_at, leased_until) VALUES (?, 'expired-lease', 'browser-a', ?, ?)`)
++    .run(generic.recordId, "2026-09-05T05:00:00.000Z", "2026-09-05T05:05:00.000Z");
++  assert.equal(await repairDuplicateOrderAliases(db), 1);
++  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 1);
++  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM browser_fallback_leases").get().count, 0);
++});
++
++test("keeps a generic record separate when two seller accounts are plausible", async (context) => {
++  const { database, db } = await monitorDatabase();
++  context.after(() => database.close());
++  const orderId = "408-8581724-4474736";
++  const marketplaceId = "A13V1IB3VIYZZH";
++  await upsertOrder(db, {
++    orderId, trackingNumber: "CC123456781FR", sellerAccountId: "sellercentral.amazon.fr", marketplaceId
++  });
++  for (const accountId of ["merchant-one", "merchant-two"]) {
++    database.prepare(`INSERT INTO orders (record_id, account_id, account_name, marketplace_id, order_id, tracking_number, first_seen_at, updated_at)
++      VALUES (?, ?, ?, ?, ?, 'CC123456781FR', ?, ?)`)
++      .run(`${accountId}|${marketplaceId}|${orderId}`, accountId, accountId, marketplaceId, orderId,
++        "2026-09-01T07:00:00.000Z", "2026-09-01T07:00:00.000Z");
++  }
++
++  assert.equal(await repairDuplicateOrderAliases(db), 0);
++  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 3);
++});
++
++test("clears stale delivered recommendations while preserving real claim history", async (context) => {
++  const { database, db } = await monitorDatabase();
++  context.after(() => database.close());
++  for (const [index, claimStatus] of ["none", "requested", "sent"].entries()) {
++    const order = await upsertOrder(db, {
++      orderId: `408-8581724-447474${index}`,
++      trackingNumber: `CC12345679${index}FR`,
++      sellerAccountId: "merchant-one",
++      trackingState: "delivered",
++      statusText: "Votre colis a été livré.",
++      claimRecommended: true,
++      claimReason: "delayed",
++      claimTitle: "Delivery overdue",
++      claimStatus
++    });
++    database.prepare("UPDATE orders SET claim_recommended = 1, claim_reason = 'delayed', claim_title = 'Delivery overdue' WHERE record_id = ?")
++      .run(order.recordId);
++  }
++
++  assert.equal(await repairDeliveredClaimRecommendations(db), 1);
++  const rows = database.prepare("SELECT claim_status, claim_recommended, claim_reason, claim_title FROM orders ORDER BY claim_status").all()
++    .map((row) => ({ ...row }));
++  assert.deepEqual(rows, [
++    { claim_status: "none", claim_recommended: 0, claim_reason: "none", claim_title: "" },
++    { claim_status: "requested", claim_recommended: 1, claim_reason: "delayed", claim_title: "Delivery overdue" },
++    { claim_status: "sent", claim_recommended: 1, claim_reason: "delayed", claim_title: "Delivery overdue" }
++  ]);
++});
++
+ test("keeps a complete claim package when another browser uploads blank sender fields", async (context) => {
+   const { database, db } = await monitorDatabase();
+   context.after(() => database.close());
+diff --git a/monitor-service/wrangler.toml b/monitor-service/wrangler.toml
+index a329469..51525e8 100644
+--- a/monitor-service/wrangler.toml
++++ b/monitor-service/wrangler.toml
+@@ -4,6 +4,7 @@ compatibility_date = "2026-08-31"
+ 
+ [vars]
+ CHEAPLY_AUTH_CLIENT_ID = "REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID"
++SHOPIFY_ALLOWED_SHOPS = "cheaply-today.myshopify.com"
+ 
+ [assets]
+ directory = "./admin"
+diff --git a/src/shared/carrier-rules.js b/src/shared/carrier-rules.js
+index ae4d161..4e412a0 100644
+--- a/src/shared/carrier-rules.js
++++ b/src/shared/carrier-rules.js
+@@ -67,7 +67,7 @@
+     if (/^X[A-Z]\d{9}JB$/.test(trackingNumber)) {
+       return { id: "chronopost", label: "Chronopost", supported: true, source: "tracking_number" };
+     }
+-    if (/^(?:6A|9L|6C|9V|8R|8U|6G|6V|6H|9H|6M|9M|CM|CG|CI|8S|0M|1M|8B|8E|7E)\d{11}$/.test(trackingNumber)) {
++    if (/^(?:6A|9L|6C|9V|8R|8U|6G|6V|6H|9H|6M|9M|CM|CG|CI|8S|0M|1M|8B|8E|7E)\d{11}$/.test(trackingNumber) || /^[A-Z]{2}\d{9}FR$/.test(trackingNumber)) {
+       return { id: "laposte", label: "Colissimo", supported: true, source: "tracking_number" };
+     }
+     return null;
+diff --git a/tests/carrier-rules.test.js b/tests/carrier-rules.test.js
+index 91bd434..41dcb51 100644
+--- a/tests/carrier-rules.test.js
++++ b/tests/carrier-rules.test.js
+@@ -117,8 +117,11 @@ test("uses an unambiguous tracking-number format to correct the carrier label",
+   assert.equal(laPoste8U.id, "laposte");
+   assert.equal(laPoste8U.source, "tracking_number");
+   assert.equal(laPoste8U.labelMismatch, true);
+-  assert.equal(carrierFromTrackingNumber("CC000000002FR"), null);
+-  assert.equal(detectCarrier({ carrier: "Colissimo", trackingNumber: "CC000000002FR" }).id, "laposte");
++  assert.equal(carrierFromTrackingNumber("CC000000002FR").id, "laposte");
++  const laPosteUpu = detectCarrier({ carrier: "Chronopost", trackingNumber: "CC000000002FR" });
++  assert.equal(laPosteUpu.id, "laposte");
++  assert.equal(laPosteUpu.source, "tracking_number");
++  assert.equal(laPosteUpu.labelMismatch, true);
+ });
+ 
+ test("recommends a loss claim when the carrier cannot locate the parcel", () => {
+diff --git a/tests/monitor-service.test.js b/tests/monitor-service.test.js
+index 011e744..5557209 100644
+--- a/tests/monitor-service.test.js
++++ b/tests/monitor-service.test.js
+@@ -129,6 +129,7 @@ test("dashboard exposes the required order queues, account filter, claims, resol
+   assert.match(dashboardScript, /data-recheck/);
+   assert.match(dashboardScript, /Recheck this parcel now/);
+   assert.match(dashboardScript, /\/recheck/);
++  assert.match(dashboardScript, /order\.trackingState !== "delivered" && order\.claimRecommended/);
+   assert.match(worker, /enqueueOrderRecheck/);
+   assert.match(worker, /force:\s*true/);
+ });
+@@ -192,6 +193,8 @@ test("monitor deployment fails before mutation when required production configur
+   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
+   assert.match(deployment, /node monitor-service\/scripts\/verify-laposte-access\.mjs/);
+   assert.match(deployment, /allow_pending_laposte/);
++  assert.match(deployment, /inputs\.allow_pending_laposte \|\| vars\.LAPOSTE_ALLOW_PENDING/);
++  assert.equal((deployment.match(/inputs\.allow_pending_laposte \|\| vars\.LAPOSTE_ALLOW_PENDING/g) || []).length, 2);
+   assert.match(lapostePreflight, /LAPOSTE_ALLOW_PENDING/);
+   assert.match(lapostePreflight, /api\.laposte\.fr\/suivi\/v2\/idships/);
+   assert.match(lapostePreflight, /X-Okapi-Key/);
