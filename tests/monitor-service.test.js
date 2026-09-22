@@ -129,6 +129,7 @@ test("dashboard exposes the required order queues, account filter, claims, resol
   assert.match(dashboardScript, /data-recheck/);
   assert.match(dashboardScript, /Recheck this parcel now/);
   assert.match(dashboardScript, /\/recheck/);
+  assert.match(dashboardScript, /order\.trackingState !== "delivered" && order\.claimRecommended/);
   assert.match(worker, /enqueueOrderRecheck/);
   assert.match(worker, /force:\s*true/);
 });
@@ -192,6 +193,8 @@ test("monitor deployment fails before mutation when required production configur
   assert.match(ssoPreflight, /__Host-cheaply_sso_request=/);
   assert.match(deployment, /node monitor-service\/scripts\/verify-laposte-access\.mjs/);
   assert.match(deployment, /allow_pending_laposte/);
+  assert.match(deployment, /inputs\.allow_pending_laposte \|\| vars\.LAPOSTE_ALLOW_PENDING/);
+  assert.equal((deployment.match(/inputs\.allow_pending_laposte \|\| vars\.LAPOSTE_ALLOW_PENDING/g) || []).length, 2);
   assert.match(lapostePreflight, /LAPOSTE_ALLOW_PENDING/);
   assert.match(lapostePreflight, /api\.laposte\.fr\/suivi\/v2\/idships/);
   assert.match(lapostePreflight, /X-Okapi-Key/);

@@ -144,8 +144,10 @@
       const address = [order.recipientPostalCode, order.recipientCity, order.recipientCountry].filter(Boolean).join(" · ");
       const claim = order.claimStatus === "sent"
         ? `<strong>Sent${order.claimReference ? ` · ${escapeHtml(order.claimReference)}` : ""}</strong>${escapeHtml(order.claimReason || "")}`
-        : order.claimRecommended || order.claimStatus === "requested"
-          ? `<strong>${order.claimStatus === "requested" ? "Requested" : "Recommended"}</strong>${escapeHtml(order.claimReason || "Review")}`
+        : order.claimStatus === "requested"
+          ? `<strong>Requested</strong>${escapeHtml(order.claimReason || "Review")}`
+          : order.trackingState !== "delivered" && order.claimRecommended
+            ? `<strong>Recommended</strong>${escapeHtml(order.claimReason || "Review")}`
           : "No claim queued";
       return `<tr>
         <td><a class="order-link" href="${escapeHtml(order.amazonUrl || `https://sellercentral.amazon.fr/orders-v3/order/${order.orderId}`)}" target="_blank" rel="noopener">${escapeHtml(order.orderId)}</a><span class="subline">${escapeHtml(order.recipientName || "Recipient not captured")} · ${escapeHtml(address)}</span></td>

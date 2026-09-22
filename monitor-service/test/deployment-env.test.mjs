@@ -9,7 +9,8 @@ const valid = {
   LAPOSTE_OKAPI_KEY: "okapi-key",
   MONITOR_SESSION_SECRET: "session-secret-that-is-longer-than-thirty-two-characters",
   MONITOR_TRACKING_CLIENT_SECRET: "tracking-client-secret-that-is-also-longer-than-thirty-two",
-  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001"
+  CHEAPLY_AUTH_CLIENT_ID: "ca_tracking_web_client_0001",
+  CLAIM_INTEGRATION_SECRET: "shopify-claim-integration-secret-that-is-long-enough"
 };
 
 test("accepts a complete production deployment configuration", () => {
@@ -33,6 +34,7 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
     MONITOR_SESSION_SECRET: shared,
     MONITOR_TRACKING_CLIENT_SECRET: shared,
     CHEAPLY_AUTH_CLIENT_ID: "tracking-web"
+    CLAIM_INTEGRATION_SECRET: shared
   });
   assert.ok(errors.some((error) => error.includes("32-character Cloudflare")));
   assert.ok(errors.some((error) => error.includes("D1 database UUID")));
@@ -40,4 +42,5 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
   assert.ok(errors.some((error) => error.includes("LAPOSTE_OKAPI_KEY appears incomplete")));
   assert.ok(errors.some((error) => error.includes("CHEAPLY_AUTH_CLIENT_ID")));
   assert.ok(errors.some((error) => error.includes("Use different values")));
+  assert.ok(errors.some((error) => error.includes("CLAIM_INTEGRATION_SECRET must be different")));
 });

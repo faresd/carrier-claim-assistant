@@ -7,7 +7,8 @@ const REQUIRED = [
   "LAPOSTE_OKAPI_KEY",
   "MONITOR_SESSION_SECRET",
   "MONITOR_TRACKING_CLIENT_SECRET",
-  "CHEAPLY_AUTH_CLIENT_ID"
+  "CHEAPLY_AUTH_CLIENT_ID",
+  "CLAIM_INTEGRATION_SECRET"
 ];
 
 function configured(environment, name) {
@@ -27,6 +28,7 @@ export function validateDeploymentEnvironment(environment = process.env) {
   const sessionSecret = configured(environment, "MONITOR_SESSION_SECRET");
   const trackingSecret = configured(environment, "MONITOR_TRACKING_CLIENT_SECRET");
   const cheaplyAuthClientId = configured(environment, "CHEAPLY_AUTH_CLIENT_ID");
+  const claimIntegrationSecret = configured(environment, "CLAIM_INTEGRATION_SECRET");
 
   if (accountId && !/^[a-f0-9]{32}$/i.test(accountId)) errors.push("CF_ACCOUNT_ID must be a 32-character Cloudflare account ID.");
   if (databaseId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(databaseId)) {
@@ -39,8 +41,12 @@ export function validateDeploymentEnvironment(environment = process.env) {
   if (cheaplyAuthClientId && !/^(ca_|cm_sso_)[A-Za-z0-9_-]{24}$/.test(cheaplyAuthClientId)) {
     errors.push("CHEAPLY_AUTH_CLIENT_ID must be a central Cheaply Auth client id.");
   }
+  if (claimIntegrationSecret && claimIntegrationSecret.length < 32) errors.push("CLAIM_INTEGRATION_SECRET must contain at least 32 characters.");
   if (sessionSecret && trackingSecret && sessionSecret === trackingSecret) {
     errors.push("Use different values for MONITOR_SESSION_SECRET and MONITOR_TRACKING_CLIENT_SECRET.");
+  }
+  if (claimIntegrationSecret && [sessionSecret, trackingSecret].includes(claimIntegrationSecret)) {
+    errors.push("CLAIM_INTEGRATION_SECRET must be different from the monitor session and tracking client secrets.");
   }
   return errors;
 }
