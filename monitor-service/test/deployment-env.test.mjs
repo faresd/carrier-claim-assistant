@@ -33,7 +33,7 @@ test("rejects malformed identifiers, short secrets, and secret reuse", () => {
     LAPOSTE_OKAPI_KEY: "short",
     MONITOR_SESSION_SECRET: shared,
     MONITOR_TRACKING_CLIENT_SECRET: shared,
-    CHEAPLY_AUTH_CLIENT_ID: "tracking-web"
+    CHEAPLY_AUTH_CLIENT_ID: "tracking-web",
     CLAIM_INTEGRATION_SECRET: shared
   });
   assert.ok(errors.some((error) => error.includes("32-character Cloudflare")));
