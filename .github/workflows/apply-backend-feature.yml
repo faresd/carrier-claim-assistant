@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
           test -f carrier-feature.patch
           git apply --3way --index carrier-feature.patch
-          git rm carrier-feature.patch .github/workflows/apply-backend-feature.yml
+          git rm carrier-feature.patch
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Add authenticated Shopify return-monitor integration"
