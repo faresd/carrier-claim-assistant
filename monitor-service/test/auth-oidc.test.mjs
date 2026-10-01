@@ -76,7 +76,7 @@ async function flow({ legacy = false } = {}) {
           });
           assert.equal(path, "/userinfo");
           assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${accessToken}`);
-          return Response.json({ sub: "fixture-subject", email: "Owner@example.com", email_verified: true, role: "admin", name: "Owner", ...options.profile });
+          return Response.json({ sub: "fixture-subject", email: "Owner@example.com", email_verified: true, role: "admin", name: "Owner", cheaply_app_access: true, ...options.profile });
         }
       });
     }
@@ -121,7 +121,7 @@ test("signed pre-upgrade transactions remain completable with sparse UserInfo an
   const sparse = await flow({ legacy: true });
   assert.equal((await sparse.complete()).status, 302);
   const rich = await flow({ legacy: true });
-  assert.equal((await rich.complete({ omitAccessToken: true, claims: { email: "owner@example.com", role: "admin" } })).status, 302);
+  assert.equal((await rich.complete({ omitAccessToken: true, claims: { email: "owner@example.com", role: "admin", cheaply_app_access: true } })).status, 302);
   assert.deepEqual(rich.calls, ["/token", "/jwks.json"]);
   const missingIdentity = await flow({ legacy: true });
   await assert.rejects(missingIdentity.complete({ omitAccessToken: true }), /incomplete/);
@@ -186,6 +186,9 @@ test("subject, verified email, issuer, audience and role mismatches cannot creat
     { profile: { email_verified: undefined } },
     { profile: { email: "invalid" } },
     { profile: { role: undefined, roles: ["admin"] } },
+    { profile: { cheaply_app_access: false } },
+    { profile: { cheaply_app_access: undefined } },
+    { claims: { cheaply_app_access: false } },
     { profile: { iss: "https://attacker.example" } },
     { profile: { aud: "other-client" } },
     { claims: { role: "member" }, profile: { role: "admin" } },
@@ -193,7 +196,7 @@ test("subject, verified email, issuer, audience and role mismatches cannot creat
     { claims: { email_verified: false } }
   ]) {
     const f = await flow();
-    await assert.rejects(f.complete(options), /identity|UserInfo/);
+    await assert.rejects(f.complete(options), /identity|UserInfo|verified access/);
   }
   const f = await flow();
   await assert.rejects(f.complete({ profile: { role: "member" } }), /administrator access/);

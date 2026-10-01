@@ -335,7 +335,11 @@ function completeIdentity(claims, profile, clientId, { legacy = false } = {}) {
     || (legacy ? profile.email_verified === false : profile.email_verified !== true)) throw new Error("The Cheaply SSO identity is incomplete or unverified.");
   if ((claims.email !== undefined && (typeof claims.email !== "string" || claims.email.trim().toLowerCase() !== email))
     || (claims.role !== undefined && claims.role !== role)
+    || (claims.cheaply_app_access !== undefined && claims.cheaply_app_access !== true)
     || claims.email_verified === false) throw new Error("The Cheaply SSO identity claims do not match UserInfo.");
+  if (profile.cheaply_app_access !== true) {
+    throw new Error("This Cheaply account has no verified access to this application.");
+  }
   return { sub: claims.sub, email, role, name: typeof profile.name === "string" ? profile.name.slice(0, 160) : "" };
 }
 
