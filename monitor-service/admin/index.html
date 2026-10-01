@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Carrier Return Monitor</title>
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="https://auth.cheaply.fr/assets/cheaply-launcher.css">
   </head>
   <body>
     <div class="shell">
@@ -17,7 +18,8 @@
         </div>
         <div class="topbar__actions">
           <span id="session-label" class="session-label">Checking sign-in…</span>
-          <button id="profile" class="button button--secondary" type="button" hidden>Profile</button>
+          <span data-cheaply-launcher data-current-app="carrier-claim-assistant" data-auth-base="https://auth.cheaply.fr/" data-require-subject data-sign-in-url="/api/auth/login?provider=cheaply-auth&amp;return_to=/" data-avatar-selector="#profile-avatar" data-initials-selector="#profile-initials" hidden></span>
+          <button id="profile" class="button button--secondary profile-button" type="button" hidden><span id="profile-initials" class="profile-initials" aria-hidden="true">?</span><img id="profile-avatar" class="profile-avatar hidden" alt="">Profile</button>
           <span id="last-sync" class="last-sync">Not connected</span>
           <button id="add-browser" class="button button--secondary" type="button">Add browser</button>
           <button id="export-history" class="button button--secondary" type="button">Export history</button>
@@ -132,9 +134,10 @@
       </form>
     </dialog>
 
-    <dialog id="profile-dialog"><form method="dialog" class="dialog-card"><header><h2 id="profile-name">Profile</h2><button class="icon-button" aria-label="Close">×</button></header><div class="profile-content"><p id="profile-email"></p><p id="profile-role"></p><p>Authentication remains compatible with Legacy SSO.</p></div><footer><a class="button button--secondary" href="/api/auth/login?prompt=select_account&return_to=/">Switch account</a><button class="button button--secondary" value="cancel">Close</button></footer></form></dialog>
+    <dialog id="profile-dialog"><form method="dialog" class="dialog-card"><header><h2 id="profile-name">Profile</h2><button class="icon-button" aria-label="Close">×</button></header><div class="profile-content"><p id="profile-email"></p><p id="profile-role"></p><p>Authentication remains compatible with Legacy SSO.</p><a id="edit-photo" href="https://auth.cheaply.fr/account/security" hidden>Edit profile photo</a></div><footer><a class="button button--secondary" href="/api/auth/login?prompt=select_account&amp;return_to=/">Switch account</a><button class="button button--secondary" value="cancel">Close</button></footer></form></dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
     <script src="/app.js"></script>
+    <script src="https://auth.cheaply.fr/assets/cheaply-launcher.js" defer></script>
   </body>
 </html>
