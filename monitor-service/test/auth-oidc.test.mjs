@@ -200,11 +200,18 @@ test("subject, verified email, issuer, audience and role mismatches cannot creat
   }
   const f = await flow();
   await assert.rejects(f.complete({ profile: { role: "member" } }), /administrator access/);
-  const allowed = await f.complete({ profile: { role: "member" }, env: { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" } });
-  const principal = await readDashboardSession(new Request("https://tracking.cheaply.fr/", {
-    headers: { cookie: cookieValue(allowed, dashboardAuthConfig.sessionCookie) }
-  }), { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" }, f.now);
-  assert.equal(principal.role, "employee", "explicit admin allow-list must not rewrite upstream role");
+  await assert.rejects(f.complete({ profile: { role: "member" }, env: { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" } }), /administrator access/);
+});
+
+test("a legacy email allow-list cannot revive a central member dashboard session", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const member = { sub: "fixture-subject", email: "owner@example.com", role: "employee", iat: now, exp: now + 300 };
+  const allowlisted = { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" };
+  for (const provider of [undefined, "cheaply-auth"]) {
+    const value = await signAuthPayload({ ...member, provider }, env.SESSION_SECRET);
+    const request = new Request("https://tracking.cheaply.fr/", { headers: { cookie: `${dashboardAuthConfig.sessionCookie}=${value}` } });
+    assert.equal(await readDashboardSession(request, allowlisted, now), null);
+  }
 });
 
 test("provider redirects, errors and oversized responses cannot leak secrets or trigger a fallback", async () => {

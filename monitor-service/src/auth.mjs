@@ -442,7 +442,11 @@ export async function finishDashboardLogin(request, env, {
     }
   }
 
-  if (!identityMayAdmin(claims, env)) throw new Error("This Cheaply account does not have tracking administrator access.");
+  // Central Auth is authoritative for this application's role. Retain the
+  // explicit email allow-list only for the separate Legacy Mail SSO bridge.
+  if (provider.id === CENTRAL_PROVIDER_ID ? claims.role !== "admin" : !identityMayAdmin(claims, env)) {
+    throw new Error("This Cheaply account does not have tracking administrator access.");
+  }
   const session = await signAuthPayload({
     sub: String(claims.sub),
     email: String(claims.email).toLowerCase(),
@@ -461,7 +465,10 @@ export async function finishDashboardLogin(request, env, {
 
 export async function readDashboardSession(request, env, now = Math.floor(Date.now() / 1000)) {
   const session = await verifyAuthPayload(getCookie(request, SESSION_COOKIE), env.SESSION_SECRET, now);
-  return session && identityMayAdmin(session, env) ? session : null;
+  if (!session) return null;
+  return (session.provider === CENTRAL_PROVIDER_ID || !session.provider)
+    ? (session.role === "admin" ? session : null)
+    : (identityMayAdmin(session, env) ? session : null);
 }
 
 export async function csrfTokenForSession(session, secret) {
