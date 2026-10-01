@@ -76,7 +76,7 @@ async function flow({ legacy = false } = {}) {
           });
           assert.equal(path, "/userinfo");
           assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${accessToken}`);
-          return Response.json({ sub: "fixture-subject", email: "Owner@example.com", email_verified: true, role: "admin", name: "Owner", ...options.profile });
+          return Response.json({ sub: "fixture-subject", email: "Owner@example.com", email_verified: true, role: "admin", name: "Owner", cheaply_app_access: true, ...options.profile });
         }
       });
     }
@@ -121,7 +121,7 @@ test("signed pre-upgrade transactions remain completable with sparse UserInfo an
   const sparse = await flow({ legacy: true });
   assert.equal((await sparse.complete()).status, 302);
   const rich = await flow({ legacy: true });
-  assert.equal((await rich.complete({ omitAccessToken: true, claims: { email: "owner@example.com", role: "admin" } })).status, 302);
+  assert.equal((await rich.complete({ omitAccessToken: true, claims: { email: "owner@example.com", role: "admin", cheaply_app_access: true } })).status, 302);
   assert.deepEqual(rich.calls, ["/token", "/jwks.json"]);
   const missingIdentity = await flow({ legacy: true });
   await assert.rejects(missingIdentity.complete({ omitAccessToken: true }), /incomplete/);
@@ -186,6 +186,9 @@ test("subject, verified email, issuer, audience and role mismatches cannot creat
     { profile: { email_verified: undefined } },
     { profile: { email: "invalid" } },
     { profile: { role: undefined, roles: ["admin"] } },
+    { profile: { cheaply_app_access: false } },
+    { profile: { cheaply_app_access: undefined } },
+    { claims: { cheaply_app_access: false } },
     { profile: { iss: "https://attacker.example" } },
     { profile: { aud: "other-client" } },
     { claims: { role: "member" }, profile: { role: "admin" } },
@@ -193,15 +196,22 @@ test("subject, verified email, issuer, audience and role mismatches cannot creat
     { claims: { email_verified: false } }
   ]) {
     const f = await flow();
-    await assert.rejects(f.complete(options), /identity|UserInfo/);
+    await assert.rejects(f.complete(options), /identity|UserInfo|verified access/);
   }
   const f = await flow();
   await assert.rejects(f.complete({ profile: { role: "member" } }), /administrator access/);
-  const allowed = await f.complete({ profile: { role: "member" }, env: { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" } });
-  const principal = await readDashboardSession(new Request("https://tracking.cheaply.fr/", {
-    headers: { cookie: cookieValue(allowed, dashboardAuthConfig.sessionCookie) }
-  }), { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" }, f.now);
-  assert.equal(principal.role, "employee", "explicit admin allow-list must not rewrite upstream role");
+  await assert.rejects(f.complete({ profile: { role: "member" }, env: { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" } }), /administrator access/);
+});
+
+test("a legacy email allow-list cannot revive a central member dashboard session", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const member = { sub: "fixture-subject", email: "owner@example.com", role: "employee", iat: now, exp: now + 300 };
+  const allowlisted = { ...env, TRACKING_ADMIN_EMAILS: "owner@example.com" };
+  for (const provider of [undefined, "cheaply-auth"]) {
+    const value = await signAuthPayload({ ...member, provider }, env.SESSION_SECRET);
+    const request = new Request("https://tracking.cheaply.fr/", { headers: { cookie: `${dashboardAuthConfig.sessionCookie}=${value}` } });
+    assert.equal(await readDashboardSession(request, allowlisted, now), null);
+  }
 });
 
 test("provider redirects, errors and oversized responses cannot leak secrets or trigger a fallback", async () => {

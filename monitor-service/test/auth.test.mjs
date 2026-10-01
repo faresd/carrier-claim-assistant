@@ -110,6 +110,7 @@ test("verifies central ES256/JWKS identity assertions and rejects another audien
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
+    cheaply_app_access: true,
     name: "Owner",
     iat: now,
     exp: now + 300
@@ -134,6 +135,7 @@ test("exchanges the one-time code and creates a secure local dashboard session",
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
+    cheaply_app_access: true,
     name: "Owner",
     iat: now,
     exp: now + 300

@@ -501,6 +501,13 @@
       document.getElementById("session-label").textContent = `Signed in · ${auth.user.name || auth.user.email}`;
       document.getElementById("logout").hidden = false;
       document.getElementById("profile").hidden = false;
+      const centralIdentity = auth.user.provider === "cheaply-auth" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(auth.user.sub || ""));
+      const launcher = document.querySelector("[data-cheaply-launcher]");
+      launcher.hidden = !centralIdentity;
+      launcher.dataset.expectedSubject = centralIdentity ? auth.user.sub : "";
+      window.CheaplyLauncherSetIdentity?.(centralIdentity ? { provider: "cheaply", sub: auth.user.sub } : null);
+      document.getElementById("edit-photo").hidden = !centralIdentity;
+      document.getElementById("profile-initials").textContent = String(auth.user.name || auth.user.email || "?").trim().split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase();
       authCard.hidden = true;
       await load();
     } catch (error) {
