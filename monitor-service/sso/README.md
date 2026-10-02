@@ -8,7 +8,7 @@ The central `cheaply-sso` Worker must add this exact client alongside the
 existing `presence-web` branch:
 
 ```js
-if (clientId === "tracking-web") {
+if (clientId === "ca_tracking_web_client_0001") {
   return {
     id: clientId,
     redirectUris: ["https://tracking.cheaply.fr/api/auth/callback"],
@@ -24,5 +24,5 @@ as:
 - `MONITOR_TRACKING_CLIENT_SECRET` in GitHub Actions for this repository.
 
 Never commit the secret. After deployment, verify that both `presence-web` and
-`tracking-web` can complete login and that an unregistered redirect URI is
-rejected.
+`ca_tracking_web_client_0001` can complete login and that an unregistered
+redirect URI is rejected.

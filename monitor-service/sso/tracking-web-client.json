@@ -1,5 +1,5 @@
 {
-  "client_id": "tracking-web",
+  "client_id": "ca_tracking_web_client_0001",
   "application_origin": "https://tracking.cheaply.fr",
   "redirect_uris": [
     "https://tracking.cheaply.fr/api/auth/callback"

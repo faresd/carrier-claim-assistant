@@ -4,6 +4,7 @@ compatibility_date = "2026-08-31"
 
 [vars]
 OPENAI_MODEL = "gpt-5-mini"
+CHEAPLY_AUTH_CLIENT_ID = "REPLACE_WITH_CHEAPLY_AUTH_CLIENT_ID"
 
 [assets]
 directory = "./admin"

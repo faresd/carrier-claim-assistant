@@ -389,7 +389,7 @@ test("keeps dashboard pages and assets private until a valid SSO session exists"
   const destination = new URL(anonymous.headers.get("location"));
   assert.equal(destination.origin, "https://auth.cheaply.fr");
   assert.equal(destination.pathname, "/authorize");
-  assert.equal(destination.searchParams.get("client_id"), "tracking-web");
+  assert.equal(destination.searchParams.get("client_id"), "ca_tracking_web_client_0001");
   assert.match(anonymous.headers.get("set-cookie"), /^__Host-carrier_monitor_oauth=/);
   assert.equal(assetRequests, 0);
 

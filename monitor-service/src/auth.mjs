@@ -1,6 +1,6 @@
 const AUTH_ORIGIN = "https://auth.cheaply.fr";
 const APP_ORIGIN = "https://tracking.cheaply.fr";
-const CLIENT_ID = "tracking-web";
+const DEFAULT_CLIENT_ID = "ca_tracking_web_client_0001";
 const CALLBACK_URI = `${APP_ORIGIN}/api/auth/callback`;
 const SESSION_COOKIE = "__Host-carrier_monitor_session";
 const REQUEST_COOKIE = "__Host-carrier_monitor_oauth";
@@ -29,6 +29,10 @@ function randomToken(bytes = 32) {
 
 function isStrongSecret(value) {
   return typeof value === "string" && value.length >= 32;
+}
+
+function cheaplyAuthClientId(env = {}) {
+  return String(env.CHEAPLY_AUTH_CLIENT_ID || DEFAULT_CLIENT_ID).trim() || DEFAULT_CLIENT_ID;
 }
 
 async function hmac(value, secret) {
@@ -110,6 +114,7 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
   const state = randomToken(32);
   const verifier = randomToken(64);
   const pending = await signAuthPayload({
+    clientId: cheaplyAuthClientId(env),
     state,
     verifier,
     returnTo: safeReturnTo(url.searchParams.get("return_to")),
@@ -117,7 +122,7 @@ export async function beginDashboardLogin(request, env, now = Math.floor(Date.no
     exp: now + REQUEST_TTL_SECONDS
   }, env.SESSION_SECRET);
   const authorization = new URL(`${AUTH_ORIGIN}/authorize`);
-  authorization.searchParams.set("client_id", CLIENT_ID);
+  authorization.searchParams.set("client_id", cheaplyAuthClientId(env));
   authorization.searchParams.set("redirect_uri", CALLBACK_URI);
   authorization.searchParams.set("response_type", "code");
   authorization.searchParams.set("state", state);
@@ -137,7 +142,7 @@ function audienceIncludes(audience, expected) {
 export async function verifyCentralIdToken(token, {
   now = Math.floor(Date.now() / 1000),
   fetchImpl = fetch,
-  expectedAudience = CLIENT_ID
+  expectedAudience = DEFAULT_CLIENT_ID
 } = {}) {
   const [encodedHeader, encodedPayload, encodedSignature, extra] = String(token || "").split(".");
   if (!encodedHeader || !encodedPayload || !encodedSignature || extra) throw new Error("Invalid SSO token format.");
@@ -191,13 +196,16 @@ export async function finishDashboardLogin(request, env, {
   }
   const url = new URL(request.url);
   const pending = await verifyAuthPayload(getCookie(request, REQUEST_COOKIE), env.SESSION_SECRET, now);
-  if (!pending || pending.state !== url.searchParams.get("state") || !url.searchParams.get("code")) throw new Error("The SSO request is invalid or expired.");
+  const clientId = cheaplyAuthClientId(env);
+  if (!pending || pending.clientId !== clientId || pending.state !== url.searchParams.get("state") || !url.searchParams.get("code")) {
+    throw new Error("The SSO request is invalid or expired.");
+  }
   const tokenResponse = await fetchImpl(`${AUTH_ORIGIN}/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: CLIENT_ID,
+      client_id: clientId,
       client_secret: env.TRACKING_CLIENT_SECRET,
       redirect_uri: CALLBACK_URI,
       code: url.searchParams.get("code"),
@@ -206,7 +214,7 @@ export async function finishDashboardLogin(request, env, {
   });
   const tokenPayload = await tokenResponse.json().catch(() => ({}));
   if (!tokenResponse.ok || !tokenPayload.id_token) throw new Error("Cheaply SSO did not accept the authorization code.");
-  const claims = await verifyCentralIdToken(tokenPayload.id_token, { now, fetchImpl });
+  const claims = await verifyCentralIdToken(tokenPayload.id_token, { now, fetchImpl, expectedAudience: clientId });
   if (!identityMayAdmin(claims, env)) throw new Error("This Cheaply account does not have tracking administrator access.");
   const session = await signAuthPayload({
     sub: String(claims.sub),
@@ -283,7 +291,7 @@ export async function handleDashboardAuth(request, env, url) {
 export const dashboardAuthConfig = Object.freeze({
   authOrigin: AUTH_ORIGIN,
   appOrigin: APP_ORIGIN,
-  clientId: CLIENT_ID,
+  clientId: DEFAULT_CLIENT_ID,
   callbackUri: CALLBACK_URI,
   sessionCookie: SESSION_COOKIE,
   requestCookie: REQUEST_COOKIE

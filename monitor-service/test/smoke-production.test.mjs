@@ -4,12 +4,13 @@ import { verifyProductionMonitor } from "../scripts/smoke-production.mjs";
 
 function successfulResponse(url) {
   const path = new URL(url).pathname;
+  const clientId = process.env.CHEAPLY_AUTH_CLIENT_ID || "ca_tracking_web_client_0001";
   if (path === "/api/health") return Response.json({ ok: true, service: "carrier-return-monitor", ready: true });
   if (path === "/" || path === "/app.js") {
     return new Response(null, {
       status: 302,
       headers: {
-        location: "https://auth.cheaply.fr/authorize?client_id=tracking-web&code_challenge_method=S256",
+        location: `https://auth.cheaply.fr/authorize?client_id=${clientId}&code_challenge_method=S256`,
         "set-cookie": "__Host-carrier_monitor_oauth=signed; Path=/; HttpOnly; Secure; SameSite=Lax"
       }
     });
@@ -18,23 +19,30 @@ function successfulResponse(url) {
   if (path === "/api/auth/login") {
     return new Response(null, {
       status: 302,
-      headers: { location: "https://auth.cheaply.fr/authorize?client_id=tracking-web&code_challenge_method=S256" }
+      headers: { location: `https://auth.cheaply.fr/authorize?client_id=${clientId}&code_challenge_method=S256` }
     });
   }
   return new Response("missing", { status: 404 });
 }
 
 test("verifies the live health, private dashboard boundary, API boundary, and SSO redirect", async () => {
+  const previous = process.env.CHEAPLY_AUTH_CLIENT_ID;
+  process.env.CHEAPLY_AUTH_CLIENT_ID = "ca_tracking_web_client_0001";
   const visited = [];
-  const result = await verifyProductionMonitor({
-    fetchImpl: async (url) => {
-      visited.push(new URL(url).pathname);
-      return successfulResponse(url);
-    },
-    attempts: 1
-  });
-  assert.equal(result, true);
-  assert.deepEqual(visited, ["/api/health", "/", "/app.js", "/api/orders", "/api/auth/login"]);
+  try {
+    const result = await verifyProductionMonitor({
+      fetchImpl: async (url) => {
+        visited.push(new URL(url).pathname);
+        return successfulResponse(url);
+      },
+      attempts: 1
+    });
+    assert.equal(result, true);
+    assert.deepEqual(visited, ["/api/health", "/", "/app.js", "/api/orders", "/api/auth/login"]);
+  } finally {
+    if (previous === undefined) delete process.env.CHEAPLY_AUTH_CLIENT_ID;
+    else process.env.CHEAPLY_AUTH_CLIENT_ID = previous;
+  }
 });
 
 test("retries a temporary custom-domain failure before succeeding", async () => {

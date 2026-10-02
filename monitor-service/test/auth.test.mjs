@@ -84,7 +84,7 @@ test("starts the same PKCE authorization-code flow used by Presence", async () =
   const destination = new URL(response.headers.get("location"));
   assert.equal(destination.origin, "https://auth.cheaply.fr");
   assert.equal(destination.pathname, "/authorize");
-  assert.equal(destination.searchParams.get("client_id"), "tracking-web");
+  assert.equal(destination.searchParams.get("client_id"), "ca_tracking_web_client_0001");
   assert.equal(destination.searchParams.get("redirect_uri"), "https://tracking.cheaply.fr/api/auth/callback");
   assert.equal(destination.searchParams.get("response_type"), "code");
   assert.equal(destination.searchParams.get("code_challenge_method"), "S256");
@@ -98,6 +98,19 @@ test("starts the same PKCE authorization-code flow used by Presence", async () =
   assert.equal(pending.state, destination.searchParams.get("state"));
 });
 
+test("uses the configured central client id for PKCE and token audience binding", async () => {
+  const clientId = "ca_tracking_web_client_0001";
+  const response = await beginDashboardLogin(new Request("https://tracking.cheaply.fr/api/auth/login"), {
+    SESSION_SECRET,
+    CHEAPLY_AUTH_CLIENT_ID: clientId
+  }, 10_000);
+  const destination = new URL(response.headers.get("location"));
+  assert.equal(destination.searchParams.get("client_id"), clientId);
+  const signed = response.headers.get("set-cookie").match(/^__Host-carrier_monitor_oauth=([^;]+)/)[1];
+  const pending = await verifyAuthPayload(signed, SESSION_SECRET, 10_000);
+  assert.equal(pending.clientId, clientId);
+});
+
 test("verifies central RS256/JWKS identity assertions and rejects another audience", async () => {
   const fixture = await signingFixture();
   const now = 50_000;
@@ -107,7 +120,7 @@ test("verifies central RS256/JWKS identity assertions and rejects another audien
   };
   const claims = {
     iss: "https://auth.cheaply.fr",
-    aud: "tracking-web",
+    aud: "ca_tracking_web_client_0001",
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
@@ -128,10 +141,10 @@ test("exchanges the one-time code and creates a secure local dashboard session",
   const now = 80_000;
   const state = "state_value_that_is_long_enough_1234567890";
   const verifier = "verifier_value_that_is_long_enough_for_pkce_1234567890";
-  const pending = await signAuthPayload({ state, verifier, returnTo: "/?view=lost", exp: now + 600 }, SESSION_SECRET);
+  const pending = await signAuthPayload({ clientId: dashboardAuthConfig.clientId, state, verifier, returnTo: "/?view=lost", exp: now + 600 }, SESSION_SECRET);
   const idToken = await fixture.sign({
     iss: "https://auth.cheaply.fr",
-    aud: "tracking-web",
+    aud: "ca_tracking_web_client_0001",
     sub: "admin:owner@example.com",
     email: "owner@example.com",
     role: "admin",
@@ -143,7 +156,7 @@ test("exchanges the one-time code and creates a secure local dashboard session",
     if (url === "https://auth.cheaply.fr/token") {
       const form = new URLSearchParams(options.body);
       assert.equal(form.get("grant_type"), "authorization_code");
-      assert.equal(form.get("client_id"), "tracking-web");
+      assert.equal(form.get("client_id"), "ca_tracking_web_client_0001");
       assert.equal(form.get("client_secret"), CLIENT_SECRET);
       assert.equal(form.get("code_verifier"), verifier);
       return Response.json({ id_token: idToken, token_type: "Bearer", expires_in: 300 });
