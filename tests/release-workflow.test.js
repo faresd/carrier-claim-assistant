@@ -63,7 +63,7 @@ function runPublish(context, overrides = {}, { archive = true, existingBytes = "
       ...process.env,
       GH_TOKEN: "synthetic-test-token",
       GITHUB_REF_NAME: "v2.10.1",
-      GITHUB_REPOSITORY: "faresd/carrier-claim-assistant",
+      GITHUB_REPOSITORY: "cheaply-fr/carrier-claim-assistant",
       TMPDIR: directory,
       MOCK_LOG: logPath,
       MOCK_ASSET_NAME: assetName,
@@ -85,7 +85,7 @@ test("creates a missing release with the verified ZIP, existing tag and generate
   const result = runPublish(context, { MOCK_RELEASE_TAGS: "v2.10.0\nv2.10.10" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.commands.length, 2);
-  assert.match(result.commands[0], /^api --paginate repos\/faresd\/carrier-claim-assistant\/releases\?per_page=100/);
+  assert.match(result.commands[0], /^api --paginate repos\/cheaply-fr\/carrier-claim-assistant\/releases\?per_page=100/);
   assert.match(result.commands[1], /^release create v2\.10\.1 dist\/carrier-claim-assistant-v2\.10\.1\.zip .*--verify-tag --generate-notes/);
 });
 

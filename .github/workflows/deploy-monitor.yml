@@ -48,6 +48,8 @@ jobs:
           CLAIM_INTEGRATION_SECRET: ${{ secrets.CLAIM_INTEGRATION_SECRET }}
         run: node monitor-service/scripts/validate-deployment-env.mjs
       - name: Verify shared SSO client registration
+        env:
+          CHEAPLY_AUTH_CLIENT_ID: ${{ vars.CHEAPLY_AUTH_CLIENT_ID }}
         run: node monitor-service/scripts/verify-sso-registration.mjs
       - name: Verify La Poste Suivi v2 access
         env:
@@ -110,4 +112,5 @@ jobs:
         env:
           MONITOR_BASE_URL: https://tracking.cheaply.fr
           MONITOR_ALLOW_PENDING: ${{ inputs.allow_pending_laposte || vars.LAPOSTE_ALLOW_PENDING }}
+          CHEAPLY_AUTH_CLIENT_ID: ${{ vars.CHEAPLY_AUTH_CLIENT_ID }}
         run: node monitor-service/scripts/smoke-production.mjs
