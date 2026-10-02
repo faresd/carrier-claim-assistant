@@ -12,9 +12,18 @@ async function verifyOnce(origin, fetchImpl) {
   }
 
   const dashboard = await fetchImpl(`${origin}/`, { redirect: "manual", headers: { accept: "text/html" } });
-  const policy = dashboard.headers.get("content-security-policy") || "";
-  if (dashboard.status !== 200 || !policy.includes("default-src 'self'") || !policy.includes("frame-ancestors 'none'")) {
-    throw new Error(`Dashboard or its security policy is unavailable (HTTP ${dashboard.status}; CSP ${policy ? policy.slice(0, 120) : "missing"}).`);
+  const dashboardLocation = new URL(dashboard.headers.get("location") || "", origin);
+  const dashboardCookie = dashboard.headers.get("set-cookie") || "";
+  if (dashboard.status !== 302 || dashboardLocation.origin !== "https://auth.cheaply.fr" || dashboardLocation.pathname !== "/authorize" ||
+    dashboardLocation.searchParams.get("client_id") !== "tracking-web" || dashboardLocation.searchParams.get("code_challenge_method") !== "S256" ||
+    !dashboardCookie.includes("__Host-carrier_monitor_oauth=")) {
+    throw new Error(`Unauthenticated dashboard access is not redirecting through Cheaply SSO (HTTP ${dashboard.status}).`);
+  }
+
+  const asset = await fetchImpl(`${origin}/app.js`, { redirect: "manual", headers: { accept: "text/javascript" } });
+  const assetLocation = new URL(asset.headers.get("location") || "", origin);
+  if (asset.status !== 302 || assetLocation.origin !== "https://auth.cheaply.fr" || assetLocation.pathname !== "/authorize") {
+    throw new Error(`Unauthenticated dashboard assets are not failing closed (HTTP ${asset.status}).`);
   }
 
   const orders = await fetchImpl(`${origin}/api/orders`, {
