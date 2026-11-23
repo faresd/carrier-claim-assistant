@@ -201,6 +201,15 @@ test("monitor deployment fails before mutation when required production configur
   assert.match(lapostePreflight, /\[401, 403\]/);
 });
 
+test("both SSO deployment probes receive the same registered client as the Worker", () => {
+  const steps = deployment.split("      - name: ");
+  for (const name of ["Verify shared SSO client registration", "Verify the live dashboard and authentication boundary", "Configure D1 database binding"]) {
+    const step = steps.find((value) => value.startsWith(name + "\n"));
+    assert.ok(step, name);
+    assert.match(step, /CHEAPLY_AUTH_CLIENT_ID: \$\{\{ vars\.CHEAPLY_AUTH_CLIENT_ID \}\}/, name);
+  }
+});
+
 test("monitor deployment verifies the live security and authentication boundary", () => {
   const deployIndex = deployment.indexOf("Deploy Worker, dashboard, queue consumer, and scheduler");
   const smokeIndex = deployment.indexOf("Verify the live dashboard and authentication boundary");
